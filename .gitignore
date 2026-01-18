@@ -1,0 +1,10 @@
+# folder data
+data/
+# cache file python
+__pycache__/
+*pyc
+# environment
+.env
+venv/
+env/
+
