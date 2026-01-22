@@ -1,8 +1,6 @@
-import asyncio
 import logging
 from typing import List
 import pandas as pd
-import yfinance as yf
 
 # Import menggunakan lazy loading untuk menghindari circular imports
 from typing import TYPE_CHECKING
@@ -86,16 +84,21 @@ class YahooFinanceAdaptor:
         if not hasattr(job, 'start_date'):
             return "Job missing start_date"
         
-        return ""  # No error
+        return ""  # No errors
+
+    # ... (bagian atas class tetap sama) ...
 
     def _prepare_yahoo_params(self, job: 'FetchJob') -> dict:
-        """Prepare parameters for yfinance - ADHD: Single responsibility"""
+        """Prepare parameters for yfinance"""
         params = {
             'start': job.start_date.strftime('%Y-%m-%d'),
             'interval': self._timeframe_map[job.timeframe],
             'progress': False,
-            'auto_adjust': True,  # Adjust for splits/dividends
-            'actions': False,  # Don't include dividend/split actions
+            'auto_adjust': True,
+            'actions': False,
+            # FIX 1: Paksa format kolom sederhana jika versi yfinance mendukung
+            # Jika versi lama, ini akan diabaikan via **params
+            'group_by': 'column', 
         }
         
         if hasattr(job, 'end_date') and job.end_date:
@@ -103,43 +106,56 @@ class YahooFinanceAdaptor:
         
         return params
 
-    async def _execute_yahoo_download(self, symbol: str, params: dict) -> pd.DataFrame:
-        """Execute yfinance download in thread pool - ADHD: Async for I/O"""
-        def _download_sync() -> pd.DataFrame:
-            try:
-                return yf.download(tickers=symbol, **params)
-            except Exception as e:
-                # Wrap yfinance errors for better debugging
-                raise RuntimeError(f"yfinance download failed: {str(e)}")
-        
-        return await asyncio.to_thread(_download_sync)
-
     def _clean_dataframe(self, df: pd.DataFrame, symbol: str) -> pd.DataFrame:
-        """Clean raw Yahoo DataFrame - ADHD: Step-by-step cleaning"""
+        """Clean raw Yahoo DataFrame - Robuster Column Detection"""
         df_clean = df.copy()
         
-        # 1. Handle MultiIndex columns
+        # 1. Handle MultiIndex columns (Masalah Utama)
         if isinstance(df_clean.columns, pd.MultiIndex):
-            # Extract first level (price columns)
-            df_clean.columns = df_clean.columns.get_level_values(0)
-            logger.debug(f"Fixed MultiIndex columns for {symbol}")
-        
-        # 2. Drop rows with NaN values (market holidays, errors)
+            # Cari level mana yang berisi 'Open'
+            found_level = -1
+            for i, level in enumerate(df_clean.columns.levels):
+                if 'Open' in level:
+                    found_level = i
+                    break
+            
+            if found_level != -1:
+                # Ambil level yang benar (Price Level)
+                df_clean.columns = df_clean.columns.get_level_values(found_level)
+            else:
+                # Fallback: Coba ambil level 0 (Default lama)
+                df_clean.columns = df_clean.columns.get_level_values(0)
+            
+            logger.debug(f"Flattened MultiIndex columns for {symbol}")
+
+        # 2. Fix Column Names (Kadang Yahoo pakai 'Adj Close' meski auto_adjust=True)
+        # Rename agar sesuai standar kita: Open, High, Low, Close, Volume
+        col_map = {
+            'Adj Close': 'Close',
+            'Stock Splits': 'Splits'
+        }
+        df_clean = df_clean.rename(columns=col_map)
+
+        # 3. Drop rows with NaN
         original_len = len(df_clean)
-        df_clean = df_clean.dropna(subset=['Open', 'High', 'Low', 'Close', 'Volume'])
+        # Pastikan kita hanya drop jika OHLCV kosong (Volume 0 boleh ada di Forex kadang-kadang)
+        subset_cols = [c for c in ['Open', 'High', 'Low', 'Close'] if c in df_clean.columns]
+        df_clean = df_clean.dropna(subset=subset_cols)
         
         if len(df_clean) < original_len:
             logger.debug(f"Dropped {original_len - len(df_clean)} NaN rows for {symbol}")
         
-        # 3. Remove timezone if present (convert to naive UTC)
+        # 4. Remove timezone
         if df_clean.index.tz is not None:
             df_clean.index = df_clean.index.tz_convert(None)
         
-        # 4. Ensure required columns exist
-        required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-        missing_cols = [col for col in required_cols if col not in df_clean.columns]
+        # 5. Final Validation
+        required_cols = {'Open', 'High', 'Low', 'Close', 'Volume'}
+        missing_cols = required_cols - set(df_clean.columns)
         
         if missing_cols:
+            # DEBUG INFO: Agar kita tahu kolom apa yang sebenarnya didapat
+            logger.error(f"Got columns: {list(df_clean.columns)}")
             raise ValueError(f"Missing columns {missing_cols} in Yahoo data for {symbol}")
         
         return df_clean

@@ -99,6 +99,7 @@ async def main():
             timeframe="1h", # Yahoo support 1h untuk 730 hari terakhir
             start_date=end_now - timedelta(days=700),
             end_date=end_now
+
         ),
         
         # Contoh: Saham Penny Indonesia (Ganti dengan kode saham murah incaran Anda)
