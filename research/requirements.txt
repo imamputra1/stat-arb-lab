@@ -1,3 +1,4 @@
+# First Dependecies
 pyarrow>=15.0.0
 pandas>=2.2.0
 numpy>=1.26.0
@@ -11,3 +12,7 @@ ipython>=8.0.0
 pytest>=7.4.0
 pytest-mock>=3.11.0
 yfinance>=0.2.36
+
+# Core Data Engines
+duckdb>=0.9.0
+polars>=0.20.0

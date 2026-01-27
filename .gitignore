@@ -1,10 +1,14 @@
-# folder data
+# --- DATA & LOGS (JANGAN DI-UPLOAD) ---
 data/
-# cache file python
-__pycache__/
-*pyc
-# environment
-.env
-venv/
-env/
+logs/
+*.db
+*.parquet
 
+# --- PYTHON CACHE ---
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.pytest_cache/
+.env
+.venv/
+env/
