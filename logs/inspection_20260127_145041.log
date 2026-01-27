@@ -1,0 +1,19 @@
+145041 [INFO] Inspection started. log file logs/inspection_20260127_145041.log
+145041 [INFO] INFRASTRUCTURE TEST: DuckDBRepository
+145041 [WARNING] ⚠️ Raw data path not found during init: .data/raw
+145041 [INFO] 🏛️ DuckDB Repository configured at :memory:
+145041 [ERROR] Failed to initialize DuckDB: IO Error: No files found that match the pattern ".data/raw/**/*.parquet"
+
+LINE 4:             FROM read_parquet('.data/raw/**/*.parquet', hive_partitioning...
+                         ^
+145041 [INFO] 
+[1] Performing Health Check ...
+145041 [ERROR] Failed to initialize DuckDB: IO Error: No files found that match the pattern ".data/raw/**/*.parquet"
+
+LINE 4:             FROM read_parquet('.data/raw/**/*.parquet', hive_partitioning...
+                         ^
+145041 [ERROR] Health Check Failed: Health Check - Init Failed: Failed to initialize DuckDB: IO Error: No files found that match the pattern ".data/raw/**/*.parquet"
+
+LINE 4:             FROM read_parquet('.data/raw/**/*.parquet', hive_partitioning...
+                         ^
+145041 [INFO] DuckDB connection closed
