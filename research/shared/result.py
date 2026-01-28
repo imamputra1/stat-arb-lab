@@ -57,15 +57,32 @@ def safe_async(func: Callable[P, Awaitable[T]]) -> Callable[P, Awaitable[Result[
             return Err(str(e))
     return wrapper
 
-def match(
+
+def match_result(  # FIX: Rename from 'match' to 'match_result'
     result: Result[T, E],
     on_ok: Callable[[T], U],
     on_err: Callable[[E], U]
 ) -> U:
     """
     Pattern matching yang Type-Safe.
-    Menggunakan isinstance agar Linter paham (Type Narrowing).
+    Renamed to match_result to avoid conflict with Python 3.10 keyword 'match'.
     """
+    if isinstance(result, Ok):
+        return on_ok(result.value)
+    elif isinstance(result, Err):
+        return on_err(result.error)
+    else:
+        raise TypeError(f"Unknown Result type: {type(result)}")
+
+"""
+def match(
+    result: Result[T, E],
+    on_ok: Callable[[T], U],
+    on_err: Callable[[E], U]
+) -> U:
+    Pattern matching yang Type-Safe.
+    Menggunakan isinstance agar Linter paham (Type Narrowing).
+    
     if isinstance(result, Ok):
         return on_ok(result.value)
     elif isinstance(result, Err):
@@ -73,3 +90,4 @@ def match(
     else:
         # Should be unreachable if types are correct
         raise TypeError(f"Unknown Result type: {type(result)}")
+"""

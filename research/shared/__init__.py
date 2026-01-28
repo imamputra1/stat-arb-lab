@@ -3,7 +3,7 @@ from .result import (
     Ok, 
     Err, 
     safe_async, 
-    match
+    match_result
 )
 
 from .domain import (
@@ -25,7 +25,7 @@ __all__ = [
     "Ok", 
     "Err", 
     "safe_async", 
-    "match",
+    "match_result",
 
     # Domain Types
     "OHLCV", 
