@@ -1,37 +1,42 @@
 """
 NODE B SURVIVAL CHECK
 System validation script for Node B infrastructure.
-Format: Standard Text/Log (No Icons)
+Location: tests/check_node_b.py
 """
 import sys
-import logging
-import importlib
 from pathlib import Path
-from typing import Dict, Any
 
-# Setup Logger: Format Standard Professional
-logging.basicConfig(
-    format='%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S',
-    level=logging.INFO,
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('nodeb_check.log', mode='w') # mode='w' untuk overwrite log lama
-    ]
-)
-logger = logging.getLogger("NodeB_Check")
+# --- [CRITICAL FIX] ---
+# Arahkan path ke Root Project agar bisa import 'research'
+# Kita ambil path file ini, naik satu level (..)
+PROJECT_ROOT = Path(__file__).parent.parent.absolute()
+sys.path.append(str(PROJECT_ROOT))
+# ----------------------
 
-def check_import(module_name: str, item_name: str = None) -> Dict[str, Any]:
-    try:
-        module = importlib.import_module(module_name)
-        if item_name:
-            item = getattr(module, item_name)
-            return {"status": True, "module": module, "item": item}
-        return {"status": True, "module": module}
-    except Exception as e:
-        return {"status": False, "error": str(e)}
+import logging
+from typing import Dict
+from datetime import datetime
 
-def check_polars() -> bool:
+# Setup Logger agar masuk ke root/logs, bukan tests/logs
+def setup_logging():
+    # Gunakan PROJECT_ROOT yang sudah kita definisikan
+    log_dir = PROJECT_ROOT / "logs"
+    log_dir.mkdir(exist_ok=True)
+    
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_filename = log_dir / f"NodeB_{timestamp}.log"
+
+    logging.basicConfig(
+        format='%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        level=logging.INFO,
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(str(log_filename), mode='w')
+        ]
+    )
+
+def check_polars(logger) -> bool:
     """Check Polars installation and basic lazy execution."""
     try:
         import polars as pl
@@ -51,17 +56,12 @@ def check_polars() -> bool:
         logger.error(f"Polars check error: {e}")
         return False
 
-def check_protocols() -> bool:
+def check_protocols(logger) -> bool:
     """Check Node B Protocols definitions and imports."""
     try:
-        # Import semua komponen yang ada di __init__.py
-        from research.processing import (
-            TimeSeriesAligner
-        )
-        
+        from research.processing import TimeSeriesAligner
         logger.info("Node B Protocols import: PASSED")
         
-        # Test runtime_checkable
         class DummyAligner:
             def align(self, data_map, **kwargs): return None
             @property
@@ -72,21 +72,17 @@ def check_protocols() -> bool:
             logger.info("Protocol runtime check (TimeSeriesAligner): PASSED")
         else:
             logger.warning("Protocol runtime check: FAILED")
-        
         return True
-        
     except Exception as e:
         logger.error(f"Protocols check error: {e}")
         return False
 
-def check_result_pattern() -> bool:
+def check_result_pattern(logger) -> bool:
     """Check Shared Result Pattern integration."""
     try:
         from research.shared import Ok, match_result
-        
         logger.info("Shared Result Pattern import: PASSED")
         
-        # Test logic
         ok_res = Ok("test")
         res = match_result(ok_res, lambda x: True, lambda e: False)
         
@@ -96,18 +92,18 @@ def check_result_pattern() -> bool:
         else:
             logger.warning("Result Pattern logic test: FAILED")
             return False
-        
     except Exception as e:
         logger.error(f"Result Pattern check error: {e}")
         return False
 
-def check_directory_structure() -> bool:
+def check_directory_structure(logger) -> bool:
     """Verify critical file paths."""
+    # Path harus dicek relatif terhadap PROJECT_ROOT
     expected_paths = [
-        Path("research/processing/__init__.py"),
-        Path("research/processing/protocols.py"),
-        Path("research/shared/__init__.py"),
-        Path("research/shared/result.py"),
+        PROJECT_ROOT / "research/processing/__init__.py",
+        PROJECT_ROOT / "research/processing/protocols.py",
+        PROJECT_ROOT / "research/shared/__init__.py",
+        PROJECT_ROOT / "research/shared/result.py",
     ]
     
     missing = []
@@ -122,17 +118,19 @@ def check_directory_structure() -> bool:
         logger.error(f"Missing files: {missing}")
         return False
 
-def check_duckdb_integration() -> bool:
+def check_duckdb_integration(logger) -> bool:
     """Check DuckDB Repository availability."""
     try:
         from research.repository import DuckDBRepository
         logger.info("DuckDB Repository import: PASSED")
         
-        repo = DuckDBRepository(":memory:", "./data/raw")
+        # Test path raw data
+        raw_path = PROJECT_ROOT / "data" / "raw"
+        repo = DuckDBRepository(":memory:", str(raw_path))
+        
         if hasattr(repo, "query"):
             return True
         return False
-        
     except ImportError:
         logger.warning("DuckDB Repository module not found.")
         return False
@@ -140,32 +138,27 @@ def check_duckdb_integration() -> bool:
         logger.error(f"DuckDB check error: {e}")
         return False
 
-def run_all_checks() -> Dict[str, bool]:
+def run_all_checks(logger) -> Dict[str, bool]:
     logger.info("--- STARTING NODE B SYSTEM CHECK ---")
-    
     checks = {
-        "Directory Structure": check_directory_structure(),
-        "Polars Engine      ": check_polars(),
-        "Protocols Import   ": check_protocols(),
-        "Result Pattern     ": check_result_pattern(),
-        "DuckDB Integration ": check_duckdb_integration(),
+        "Directory Structure": check_directory_structure(logger),
+        "Polars Engine      ": check_polars(logger),
+        "Protocols Import   ": check_protocols(logger),
+        "Result Pattern     ": check_result_pattern(logger),
+        "DuckDB Integration ": check_duckdb_integration(logger),
     }
-    
     return checks
 
 def print_summary(checks: Dict[str, bool]) -> None:
     print("\n" + "-"*50)
     print("NODE B SYSTEM CHECK SUMMARY")
     print("-"*50)
-    
     passed_count = 0
     for name, status in checks.items():
         result_str = "PASS" if status else "FAIL"
         if status: passed_count += 1
         print(f"{name} : {result_str}")
-    
     print("-"*50)
-    
     total = len(checks)
     if passed_count == total:
         print(f"OVERALL STATUS: READY ({passed_count}/{total})")
@@ -174,14 +167,15 @@ def print_summary(checks: Dict[str, bool]) -> None:
     print("-"*50 + "\n")
 
 def main() -> int:
+    setup_logging()
+    logger = logging.getLogger("NodeB_Check")
+    
     try:
-        checks = run_all_checks()
+        checks = run_all_checks(logger)
         print_summary(checks)
-        
         if all(checks.values()):
             return 0
         return 1
-            
     except KeyboardInterrupt:
         print("\nProcess interrupted.")
         return 130
