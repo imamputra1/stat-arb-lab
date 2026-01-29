@@ -2,11 +2,7 @@ import polars as pl
 from typing import Dict, List, Any
 import logging
 
-# Import Result Pattern dari Shared
-# Structure: research/processing/alignment/strategies.py -> research/shared
 from ...shared import Result, Ok, Err
-
-# Setup Logger (Standard CLI Format)
 logger = logging.getLogger("AlignmentStrategy")
 
 class HybridAsofAligner:
@@ -15,36 +11,28 @@ class HybridAsofAligner:
     Implements TimeSeriesAligner protocol using Polars 'join_asof'.
     
     Trap Prevention:
-    1. Unix vs Datetime Hell: Standardize all timestamps to Int64 (Unix MS).
+    1. Unix vs Datetime: We convert EVERYTHING to pl.Datetime("ms").
+       Why? Because Polars join_asof requires Datetime dtype to use string tolerances like "1m".
     2. Double Casting: Single cast at beginning.
     3. Null Explosion: Configurable null handling (drop or fill).
     """
 
     def __init__(self, tolerance: str = '1m', strategy: str = 'backward'):
-        """
-        Args:
-            tolerance: Time tolerance for asof join (e.g., "1m", "5m").
-            strategy: "backward" (last known valid) or "forward".
-        """
         self.tolerance = tolerance
         self.strategy = strategy
         self._validate_constructor()
 
     def _validate_constructor(self) -> None:
-        """Fail fast on invalid config."""
         valid_strategies = ["backward", "forward"]
         if self.strategy not in valid_strategies:
-            # Menggunakan ValueError agar object gagal dibuat saat init
             raise ValueError(f"Invalid strategy: {self.strategy}. Must be {valid_strategies}")
 
-        # Basic tolerance format check
         valid_suffixes = ("ms", "s", "m", "h", "d")
         if not self.tolerance.endswith(valid_suffixes):
             logger.warning(f"Tolerance format '{self.tolerance}' might be invalid for Polars.")
 
     @property
     def method(self) -> str:
-        """Protocol requirement - clear method description."""
         return f"HybridAsof(tol={self.tolerance}, strat={self.strategy})"
 
     def align(
@@ -52,16 +40,6 @@ class HybridAsofAligner:
         data_map: Dict[str, pl.LazyFrame],
         **kwargs: Any
     ) -> Result[pl.LazyFrame, str]:
-        """
-        Align multi-timeseries using Asof Join (Hybrid).
-        
-        Args:
-            data_map: Symbol -> LazyFrame (must have 'timestamp' column).
-            **kwargs:
-                - strict: bool (default True) - Drop rows with nulls (Complete Data only).
-                - anchor: str - Specify anchor symbol (Default: First symbol).
-                - suffix: str - Column suffix format (Default: "_{symbol}").
-        """
         try:
             # --- 1. VALIDATION ---
             if not data_map:
@@ -81,7 +59,6 @@ class HybridAsofAligner:
             # --- 3. PREPARE ANCHOR (BASE) ---
             logger.info(f"Setting Anchor: {anchor_symbol}")
             
-            # Prepare Anchor
             anchor_res = self._prepare_frame(
                 data_map[anchor_symbol], 
                 anchor_symbol, 
@@ -98,7 +75,6 @@ class HybridAsofAligner:
                 if sym == anchor_symbol:
                     continue
                 
-                # Prepare Follower
                 follower_res = self._prepare_frame(data_map[sym], sym, suffix_format)
                 if follower_res.is_err():
                     logger.warning(f"Skipping {sym}: {follower_res.error}")
@@ -107,8 +83,7 @@ class HybridAsofAligner:
                 lf_follower = follower_res.unwrap()
 
                 # Execute JOIN_ASOF (The Magic)
-                # Left Table = Aligned so far (Anchor)
-                # Right Table = Follower
+                # Requirement: Join Key MUST be sorted AND Datetime type (for string tolerance)
                 lf_aligned = lf_aligned.join_asof(
                     lf_follower,
                     on="timestamp",
@@ -118,11 +93,8 @@ class HybridAsofAligner:
 
             # --- 5. CLEANUP ---
             if strict_mode:
-                # Drop rows where ANY column is null (Strict Alignment)
-                # dalam toleransi waktu 1m.
                 lf_aligned = lf_aligned.drop_nulls()
 
-            # Add Metadata Columns (Optional, for debugging)
             lf_aligned = self._add_metadata(lf_aligned, symbols, anchor_symbol)
             
             return Ok(lf_aligned)
@@ -142,14 +114,14 @@ class HybridAsofAligner:
     ) -> Result[pl.LazyFrame, str]:
         """Standardize Timestamp & Rename Columns."""
         try:
-            # 1. Standardize Timestamp (Int64 & Sorted)
+            # 1. Standardize Timestamp (Datetime & Sorted)
             lf = self._standardize_timestamp(lf, symbol)
             
             # 2. Rename Columns (Suffixing)
             suffix = suffix_fmt.format(symbol=symbol)
             
+            # Rename all except timestamp
             cols_to_rename = [c for c in lf.collect_schema().names() if c != "timestamp"]
-            
             lf = lf.rename({c: f"{c}{suffix}" for c in cols_to_rename})
             
             return Ok(lf)
@@ -159,30 +131,24 @@ class HybridAsofAligner:
     def _standardize_timestamp(self, lf: pl.LazyFrame, symbol: str) -> pl.LazyFrame:
         """
         Trap Prevention Core:
-        1. Cast 'timestamp' to Int64 (Unix MS).
-        2. Sort by 'timestamp' (Required by join_asof).
-        3. Deduplicate 'timestamp'.
+        1. Cast 'timestamp' to Datetime[ms]. (FIXED from Int64)
+        2. Sort by 'timestamp'.
+        3. Deduplicate.
         """
-        # Cek kolom timestamp ada atau tidak (via Schema check ringan)
         if "timestamp" not in lf.collect_schema().names():
              raise ValueError(f"Symbol {symbol} missing 'timestamp' column")
 
         return (
             lf
             .with_columns([
-                # Force Cast ke Int64 (Unix MS)
-                pl.col("timestamp").cast(pl.Int64)
+                # CRITICAL FIX: Cast Int64 -> Datetime[ms] agar kompatibel dengan tolerance="1m"
+                pl.col("timestamp").cast(pl.Int64).cast(pl.Datetime("ms")).alias("timestamp")
             ])
-            # WAJIB SORTED untuk join_asof
             .sort("timestamp")
             .unique(subset=["timestamp"], keep="last")
-            .with_columns([
-                 pl.from_epoch(pl.col("timestamp"), time_unit="ms").alias("datetime")
-            ])
         )
 
     def _add_metadata(self, lf: pl.LazyFrame, symbols: List[str], anchor: str) -> pl.LazyFrame:
-        """Inject metadata lineage."""
         return lf.with_columns([
             pl.lit(",".join(symbols)).alias("_meta_symbols"),
             pl.lit(anchor).alias("_meta_anchor"),
@@ -190,10 +156,7 @@ class HybridAsofAligner:
         ])
 
 class ExactTimeAligner:
-    """
-    Simple aligner for exact timestamp matching (Inner Join).
-    Zero tolerance. Good for Daily candles, bad for High-Freq (M1).
-    """
+    """Simple aligner for exact timestamp matching (Inner Join)."""
     def __init__(self) -> None:
         self._method = "Exact(InnerJoin)"
 
@@ -207,19 +170,12 @@ class ExactTimeAligner:
                 return Err("No data provided")
 
             symbols = list(data_map.keys())
-            
-            # Ambil Anchor
             anchor_sym = symbols[0]
             lf_result = self._standardize(data_map[anchor_sym], anchor_sym)
 
-            # Inner Join loop
             for sym in symbols[1:]:
                 lf_other = self._standardize(data_map[sym], sym)
-                lf_result = lf_result.join(
-                    lf_other, 
-                    on="timestamp", 
-                    how="inner" # Strict Match
-                )
+                lf_result = lf_result.join(lf_other, on="timestamp", how="inner")
 
             return Ok(lf_result)
 
@@ -227,14 +183,13 @@ class ExactTimeAligner:
             return Err(f"Exact alignment failed: {e}")
 
     def _standardize(self, lf: pl.LazyFrame, symbol: str) -> pl.LazyFrame:
-        # Helper simple untuk Exact Aligner
         suffix = f"_{symbol}"
         cols = [c for c in lf.collect_schema().names() if c != "timestamp"]
         rename_map = {c: f"{c}{suffix}" for c in cols}
         
         return (
             lf
-            .with_columns(pl.col("timestamp").cast(pl.Int64))
+            .with_columns(pl.col("timestamp").cast(pl.Int64).cast(pl.Datetime("ms")))
             .sort("timestamp")
             .unique(subset=["timestamp"])
             .rename(rename_map)
@@ -247,9 +202,6 @@ def create_aligner(
     tolerance: str = "1m",
     join_strategy: str = "backward"
 ) -> Result['TimeSeriesAligner', str]:
-    """
-    Factory to create aligner instance.
-    """
     try:
         if strategy == "asof":
             aligner = HybridAsofAligner(tolerance=tolerance, strategy=join_strategy)
@@ -259,6 +211,5 @@ def create_aligner(
             return Ok(aligner)
         else:
             return Err(f"Unknown strategy: {strategy}")
-
     except Exception as e:
         return Err(f"Factory failed to create aligner: {e}")
