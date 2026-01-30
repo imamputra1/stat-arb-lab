@@ -3,6 +3,7 @@ from operator import le
 from os import error
 from threading import current_thread
 from pandas.core.array_algos import transforms
+from pandas.core.reshape.tile import _infer_precision
 from pandas.io.formats.format import return_docstring
 import polars as pl
 import time
@@ -232,4 +233,18 @@ class StandardPipeline:
         except Exception as e:
             logger.error(f"Storage Crash: {e}")
 
+    def _log_step(self, name: str, status: str, elapsed: float, **info):
+        entry = {
+            "name": name,
+            "status": status,
+            "elapsed": elapsed,
+            **info
+        }
+        self._log_step.append(entry)
+        if status == "failed":
+            logger.error(f"step {name} failed: {info.get('error')}")
+        elif status == "success":
+            logger.debug(f"step {name} success {elapsed:.3f}s")
+
+# ====================== FACTORY ======================
 
