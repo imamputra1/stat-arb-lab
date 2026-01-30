@@ -204,4 +204,13 @@ def create_validator(rules: Optional[Dict[str, Any]] = None) -> 'Result[PolarsVa
 def get_default_validator() -> 'Result[PolarsValidator, str]':
     return create_validator()
 
+# ======== SELF CHECK ========
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG)
+    res = get_default_validator()
+    if res.is_ok():
+        print(f"Validator module loaded & factory verified")
+    else:
+        print(f"Module Broken{res.error}")
+        
 
