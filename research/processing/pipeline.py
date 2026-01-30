@@ -2,6 +2,7 @@ import logging
 from operator import le
 from os import error
 from threading import current_thread
+from typing_extensions import type_repr
 from pandas.core.array_algos import transforms
 from pandas.core.reshape.tile import _infer_precision
 from pandas.io.formats.format import return_docstring
@@ -10,6 +11,7 @@ import time
 from typing import Dict, List, Any, Optional, Union, TYPE_CHECKING
 
 from research.processing import validation
+from research.processing.alignment import aligner
 from research.processing.validation import validator
 
 if TYPE_CHECKING:
@@ -247,4 +249,34 @@ class StandardPipeline:
             logger.debug(f"step {name} success {elapsed:.3f}s")
 
 # ====================== FACTORY ======================
+def create_standart_pipeline(
+    alignment: 'TimeSeriesAligner',
+    validator: Optional['DataValidator'] = None,
+    transformers: Optional[List['FeatureTransformer']] = None,
+    storage: Optional['RefineryStorage'] = None
+) -> 'Result[StandardPipeline, str]':
+    from ..shared import Ok, Err
+    from .protocols import TimeSeriesAligner, DataValidator, FeatureTransformer, RefineryStorage
 
+    try:
+        if not isinstance(aligner, TimeSeriesAligner):
+            return Err(f"aligner must implement TimeSeriesAligner, got {type(aligner)}")
+         
+        if validator in isinstance(validator, DataValidator):
+            return Err(f"Validator must implement DataValidator, got {type(validator)}")
+
+        if transformers:
+            for tf in transformers:
+                if not isinstance(tf, FeatureTransformer):
+                    return Err(f"Invalid transformers {type(tf)}")
+        if storage and not isinstance(storage, RefineryStorage):
+            return Err(f"storage must implement RefineryStorage {type(storage)}")
+
+        return Ok(StandardPipeline(aligner, validator, transformers, storage))
+
+    except Exception as e:
+        logger.debug(f"pipeline wiring skipped (Dependencies is not ready): {e}")
+
+if __name__ = "__main__"
+    logging.basicConfig(level=logger.DEBUG)
+    _test_pipeline_wiring()
