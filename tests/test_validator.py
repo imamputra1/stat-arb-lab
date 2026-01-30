@@ -172,9 +172,9 @@ class TestValidatorLogic:
         print("\n" + "="*50)
         print(f"VALIDATOR STATUS: {passed}/{total} Scenarios Passed")
         if passed == total:
-            print("✅ GATEKEEPER IS ACTIVE & STRICT.")
+            print("GATEKEEPER IS ACTIVE & STRICT.")
         else:
-            print("❌ SECURITY BREACH DETECTED.")
+            print("SECURITY BREACH DETECTED.")
         print("="*50 + "\n")
 
 if __name__ == "__main__":

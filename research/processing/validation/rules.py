@@ -129,7 +129,6 @@ class ValidationRules:
                 else:
                     logger.warning(f"Ignoring unknown rule override: '{k}'")
             
-            # Gunakan dataclasses.replace untuk clone + update yang aman
             return replace(self, **safe_kwargs)
             
         except Exception as e:
@@ -165,7 +164,7 @@ class ValidationRules:
             strict_types=False,
             check_ohlc_consistency=False,
             allow_zero_volume=True,
-            max_price_spread_pct=10.0 # 1000% spread allowed (Crypto wicks)
+            max_price_spread_pct=10.0
         )
 
 # ====================== RUNTIME CHECK ======================

@@ -30,9 +30,9 @@ class DuckDBRepository:
         # Validasi path fisik
         if not self.raw_data_path.exists():
             # Kita log warning saja, jangan crash di init, biarkan _ensure_initialized yang handle
-            logger.warning(f"⚠️ Raw data path not found during init: {raw_data_path}")
+            logger.warning(f"Raw data path not found during init: {raw_data_path}")
 
-        logger.info(f"🏛️ DuckDB Repository configured at {db_path}")
+        logger.info(f"DuckDB Repository configured at {db_path}")
 
     def _ensure_initialized(self) -> Result[None, str]:
         """Lazy initialization dengan Result pattern"""
@@ -60,7 +60,7 @@ class DuckDBRepository:
             # self.conn.execute("SET threads TO 4") # Biarkan DuckDB auto-manage threads
 
             self._is_initialized = True
-            logger.info(f"✅ DuckDB Initialized. View 'market_data' indexed from {self.raw_data_path}")
+            logger.info(f"DuckDB Initialized. View 'market_data' indexed from {self.raw_data_path}")
 
             return Ok(None)
 
@@ -253,12 +253,12 @@ SAMPLE DATA (3 rows):
             # Pastikan init
             self._ensure_initialized()
             
-            logger.info("🧹 Starting DB Optimization (ANALYZE)...")
+            logger.info("Starting DB Optimization (ANALYZE)...")
             self.conn.execute("ANALYZE market_data")
             
             # VACUUM hanya berguna jika file .db persisten, bukan memory
             if self.db_path != ":memory:":
-                logger.info("🧹 VACUUMing Database...")
+                logger.info("VACUUMing Database...")
                 self.conn.execute("VACUUM")
 
             logger.info("✨ DB Optimization Completed")

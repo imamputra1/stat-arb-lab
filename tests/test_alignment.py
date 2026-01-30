@@ -176,9 +176,9 @@ class TestAlignmentLogic:
         print("\n" + "="*50)
         print(f"TEST SUMMARY: {passed}/{total} Passed")
         if passed == total:
-            print("✅ ALL SYSTEMS GO. LOGIC IS SOUND.")
+            print("ALL SYSTEMS GO. LOGIC IS SOUND.")
         else:
-            print("❌ LOGIC FAILURE DETECTED.")
+            print("LOGIC FAILURE DETECTED.")
         print("="*50 + "\n")
 
 if __name__ == "__main__":
