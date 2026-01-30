@@ -1,11 +1,15 @@
 import logging
 from operator import le
+from os import error
+from threading import current_thread
+from pandas.core.array_algos import transforms
 from pandas.io.formats.format import return_docstring
 import polars as pl
 import time
 from typing import Dict, List, Any, Optional, Union, TYPE_CHECKING
 
 from research.processing import validation
+from research.processing.validation import validator
 
 if TYPE_CHECKING:
     from .protocols import(
@@ -165,4 +169,51 @@ class StandardPipeline:
                 return res
         except Exception as e:
             return Err(f"Validation Error {e}")
+
+    def _execution_validation(self, data: pl.LazyFrame, kwargs: Dict) -> 'Result[pl.LazyFrame, str]':
+        from ..shared import Ok, Err
+
+        t0 = time.time()
+
+        if kwargs.get("skip_validation"):
+            self._log_step("validate", "skipper", 0)
+            return Ok(data)
+
+        try:
+            rules_override = kwargs.get("validation_rules")
+            res = self.validator.validate(data, rules_override)
+
+            if res.is_ok():
+                summary = getattr(self.validator, "get_validation_summary", lambda :{})()
+                self._log_step("validator", "success", time.time() - t0, summary=summary)
+                return res
+
+            else:
+                self._log_step("validator", "failed", time.time() -  t0 error=res.error)
+                return res
+        except Exception as e:
+            return Err(f"Validation Crash: {e}")
+
+    def _execution_tranformations(self, data: pl.LazyFrame, kwargs: Dict) -> 'Result[pl.LazyFrame, str]':
+        from ..shared import Ok, Err
+        
+        t0 = time.time()
+        current = data
+
+        for idx, tf in enumerate(self.transformers):
+            try:
+                res = tf.transform(current, **kwargs)
+
+                if res.is_err():
+                    self._log_step("transformation", "failed", time.time() - t0, transformer=type(tf).__name__)
+                    return Err(f"transformer{type(tr).__name__} failed: {res.error}")
+
+                current = res.unwrap()
+
+            except Exception as e:
+                return Err(f"transformer crash: {e}")
+
+        self._log_step("transformation", "success", time.time() - t0, count=len(self.transformers))
+        return Ok(current)
+
 
