@@ -14,7 +14,7 @@ from .rules import ValidatorRules
 
 logger = logging.getLogger("DataValidator")
 
-class polarsValidator:
+class PolarsValidator:
     """
     Implemetation of DataValidator Protocol.
     Block defective data before it enters feature Engineering.
@@ -151,7 +151,6 @@ class polarsValidator:
     def _validate_sorting(self, data: pl.LazyFrame) -> 'Result[None, str]':
         """check timestamp order"""
         try:
-
             is_sorted = data.select(pl.col("timestamp").is_sorted()).collect().item()
             if not is_sorted:
                 return Err(f"Integrity Error: timestamp is not sorted ascending")
@@ -191,5 +190,18 @@ class polarsValidator:
             "rules_snapshot": rules.to_dict(),
             "stats": stats
         }
+
+# ======== Factory ========
+def create_validator(rules: Optional[Dict[str, Any]] = None) -> 'Result[PolarsValidator, str]':
+    try:
+        rules_obj = ValidatorRules.from_dict(rules) if rules else None
+
+        validator = PolarsValidator(default_rules=rules_obj)
+        return Ok(validator)
+    except Exception as e:
+        return Err(f"Validator Creation Failed:{e}")
+
+def get_default_validator() -> 'Result[PolarsValidator, str]':
+    return create_validator()
 
 
