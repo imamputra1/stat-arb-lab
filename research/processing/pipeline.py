@@ -216,4 +216,20 @@ class StandardPipeline:
         self._log_step("transformation", "success", time.time() - t0, count=len(self.transformers))
         return Ok(current)
 
+    def _execution_storage(self, data: pl.LazyFrame, kwargs Dict) -> None:
+        t0 = time.time()
+        destination = kwargs.get("storage_destination", "pipeline_output")
+
+        try:
+            res = self.storage.save(data, destination, **kwargs)
+
+            if res.is_ok():
+                self._log_step("storage", "success", time.time() - t0 , path=res.unwrap())
+            else:
+                logger.warning(f"storage failed: {res_error}")
+                self._log_step("storage", "failed", time.time() - t0, error=res.error)
+
+        except Exception as e:
+            logger.error(f"Storage Crash: {e}")
+
 
