@@ -71,4 +71,19 @@ class StatArbTransformer:
 
         return exprs
 
+    def _build_spread_expressions() -> List[pl.Expr]:
+        exprs = []
+        for col in log_cols:
+            if col == anchor_col: continue
+        
+            asset_name = col.replace("log_","")
+            beta_name = f"beta_{asset_name}_{self.anchor_symbol}"
+            spread_name = f"spread_{asset_name}"
+
+            exprs.append(
+                (pl.col(col) - (pl.col(beta_name) * pl.col(anchor_col))).alias(spread_name)
+            )
+        return exprs
+
+
 
