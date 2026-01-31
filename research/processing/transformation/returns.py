@@ -1,49 +1,101 @@
-import polars as pl
+"""
+ATOMIC TRANSFORMATION MODULE
+Focus: Converting raw nominal prices into mathematical properties (Log-Space & Returns).
+"""
 import logging
-from typing import Any, List, Optional, TYPE_CHECKING
+import polars as pl
+from typing import List, Any, Optional
 
+# Type-safe imports
+from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ...shared import Result
 
+# Shared Imports
 from ...shared import Ok, Err
 
+logger = logging.getLogger("LogReturnsTransformer")
 
-logger = logging.getLogger("LogReturnsTranformer")
+class LogReturnsTransformer:
+    """
+    Tier 1 Transformer: Efficiently converts 'close_X' to 'log_X' and 'ret_X'.
+    
+    Mathematical Logic:
+    1. Log-Price: y_t = ln(P_t)
+    2. Log-Return: r_t = y_t - y_{t-1} = ln(P_t / P_{t-1})
+    
+    Optimization:
+    - Pure LazyFrame operations (No Eager Collection).
+    - Single pass expression building.
+    - Handles Log(0) and First-Row Nulls strictly.
+    """
 
-class LogReturnsTranformer:
-    def __init__(self, target_columns: Optional[List[str]] = None, replace_zeros: bool = True, epsilon: float = 1e-9):
+    def __init__(
+        self, 
+        target_columns: Optional[List[str]] = None,
+        replace_zeros: bool = True,
+        epsilon: float = 1e-9
+    ):
+        """
+        Args:
+            target_columns: List of price columns. If None, auto-detects 'close_*'.
+            replace_zeros: If True, clips values <= 0 to epsilon to prevent -inf.
+            epsilon: Small positive float to substitute for zero prices.
+        """
         self.target_columns = target_columns
         self.replace_zeros = replace_zeros
         self.epsilon = epsilon
 
-    
-    def transform(self, data: pl.LazyFrame, **kwargs: Any) -> 'Result[pl.LazyFrame, str]':
-
+    def transform(
+        self, 
+        data: pl.LazyFrame, 
+        **kwargs: Any
+    ) -> 'Result[pl.LazyFrame, str]':
+        """
+        Executes the Log-Space transformation.
+        """
         try:
+            # 1. Schema Inspection (Metadata only, Cheap)
             schema_cols = data.collect_schema().names()
-            target = self._identify_targets(schema_cols)
+            
+            # 2. Identify Targets
+            targets = self._identify_targets(schema_cols)
+            if not targets:
+                return Err("LogReturns: No target columns found (expected 'close_*')")
 
-            if target:
-                return Err("LogReturns: No target columns found (expect 'close_*')")
+            logger.debug(f"Computing Log-Returns for: {targets}")
 
-            logger.debug(f"computing log-returns for: {target}")
-
+            # 3. Build Expressions
             expressions = []
-            for col in target:
-                base_name = col.replace("close", "")
+            for col in targets:
+                # Naming: close_BTC -> log_BTC, ret_BTC
+                base_name = col.replace("close_", "")
                 name_log = f"log_{base_name}"
                 name_ret = f"ret_{base_name}"
 
+                # A. Safe Price Expression
+                # Handle price <= 0 logic lazily
                 price_expr = pl.col(col)
                 if self.replace_zeros:
-                        price_expr = (pl.when(pl.col(col) <= 0).then(pl.lit(self.epsilon)).otherwise(pl.col(col)))
+                    price_expr = (
+                        pl.when(pl.col(col) <= 0)
+                        .then(pl.lit(self.epsilon))
+                        .otherwise(pl.col(col))
+                    )
+
+                # B. Log Price Expression
+                # y_t = ln(P_t)
                 log_expr = price_expr.log().alias(name_log)
                 expressions.append(log_expr)
 
+                # C. Log Return Expression
+                # r_t = diff(y_t). Fill null at index 0 with 0.0 to maintain continuity.
                 ret_expr = pl.col(name_log).diff().fill_null(0.0).alias(name_ret)
                 expressions.append(ret_expr)
 
+            # 4. Execute (Lazy)
             transformed_lf = data.with_columns(expressions)
+            
             return Ok(transformed_lf)
 
         except Exception as e:
@@ -51,54 +103,25 @@ class LogReturnsTranformer:
             return Err(f"Transformation Error: {str(e)}")
 
     def _identify_targets(self, available_cols: List[str]) -> List[str]:
+        """Resolve target columns against available schema."""
         if self.target_columns:
+            # Validate user provided columns exist
             missing = [c for c in self.target_columns if c not in available_cols]
-            
             if missing:
                 logger.warning(f"Requested columns not found in data: {missing}")
-            return [c for c in available_cols if c.startswith("close_")]
+            return [c for c in self.target_columns if c in available_cols]
+        
+        # Auto-detect defaults
+        return [c for c in available_cols if c.startswith("close_")]
 
 # ====================== FACTORY ======================
 
-def create_log_returns_transformer(target_columns: Optional[List[str]] = None, **kwargs: Any) -> LogReturnsTranformer:
-    return LogReturnsTranformer(target_columns=target_columns, **kwargs)
+def create_log_returns_transformer(
+    target_columns: Optional[List[str]] = None,
+    **kwargs: Any
+) -> LogReturnsTransformer:
+    """Factory for LogReturnsTransformer."""
+    return LogReturnsTransformer(target_columns=target_columns, **kwargs)
 
 # ====================== EXPORTS ======================
-__all__=["LogReturnsTranformer", "create_log_returns_transformer"]
-
-# ====================== SELF CHECK ======================
-if __all__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-
-    print("---SELF CHECK: RETURNS MODULE")
-    try:
-        df = pl.DataFrame({
-            "timestamp": range(5),
-            "close_BTC":[100.0, 101.0, 102.0, 101.0, 100.0]
-            "close_DOGE":[1.0, 0.0, 1.0, 2.0, 1.0]
-        }).lazy()
-
-        transformer = LogReturnsTranformer(replace_zeros=True)
-        res = transformer.transform(df)
-
-        if res.is_ok():
-            out = res.unwrap().collect()
-            cols = out.columns
-            print(f"[OK] Transformation Success. columns:{len(cols)}")
-
-            if "log_BTC" in cols and "ret_BTC" in cols:
-                print(f"[OK] Columns Cerate {cols}")
-                print(out.select(["close_BTC", "log_BTC", "ret_BTC"]).head(3))
-            else:
-                print("[FAIL] missing output columns")
-
-            log_doge_zero = out.filter(pl.col("close_DOGE") == 0).select("log_DOGE").item()
-            print(f"[OK] Zero handling (log(0)):{log_doge_zero}(should be near log(epsilon))")
-
-        else:
-            print(f"[FAIL] Error: {res.error}")
-
-    except Exception as e:
-        print(f"[CRITICAL] Module Crash: {e}")
-
-        
+__all__ = ["LogReturnsTransformer", "create_log_returns_transformer"]
