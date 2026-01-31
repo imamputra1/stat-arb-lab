@@ -1,7 +1,6 @@
 """
 STATIONARITY ENGINE (TIER 3)
 Focus: Statistical Arbitrage Metrics (Rolling Beta, Spread, Z-Score).
-Location: research/processing/features/stat_arb.py
 Architecture: Tiered Chaining (Beta -> Spread -> Z-Score)
 """
 import logging
