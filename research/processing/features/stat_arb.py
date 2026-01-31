@@ -111,7 +111,7 @@ class StatArbTransformer:
 
         return exprs
 
-    def _parse_to_rows() -> int:
+    def _parse_to_rows(self, window_str: str) -> int:
         try:
             val = int(''.join(filter(str.isdigit, window_str)))
             unit = ''.join(filter(str.isalpha, window_str)).lower()
@@ -123,6 +123,11 @@ class StatArbTransformer:
         except Exception:
             return 60
 
-    
+    def get_available_features() -> List[str]:
+        return ["beta_*", "spread_*", "zscore_*"]
 
+# ====================== FACTORY ======================
+def create_stat_arb_transformer(beta_window="1w", zscore_window="24h"):
+    return StatArbTransformer(beta_window=beta_window, zscore_window=zscore_window, anchor_symbol="BTC")
 
+__all__ = [StatArbTransformer, create_stat_arb_transformer]
