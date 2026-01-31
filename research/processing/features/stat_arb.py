@@ -1,6 +1,6 @@
 import logging
 import polars as pl
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, List
 
 if TYPE_CHECKING:
     from ...shared import Result
@@ -51,3 +51,24 @@ class StatArbTransformer:
         except Exception as e:
             logger.error(f"StatArb Calculation Failed: {e}", exc_info=True)
             return Err(f"Tier 3 Error: {str(e)}")
+
+    def _build_beta_expressions(self, log_cols: List[str], anchor_col: str) -> List[pl.Expr]:
+        exprs = []
+        for col in log_cols:
+            if col == anchor_col: continue
+
+            asset_name = col.replace("log_","")
+            beta_name = f"beta_{asset_name}_{self.anchor_symbol}"
+
+            cov = pl.rolling_cov(pl.col(col), pl.col(anchor_col), 
+                                 window_size=self.beta_window, min_periods=self.min_periods)
+            var = pl.col(anchor_col).rolling_var(window_size=self.beta_window, 
+                                                 min_periods=self.min_periods)
+
+            exprs.append(
+                (cov / pl.max_horizontal(var, pl.lit(1e-12))).fill_nan(0.0).fill_null(0.0).alias(beta_name)
+            )
+
+        return exprs
+
+
