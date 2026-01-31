@@ -58,3 +58,47 @@ class LogReturnsTranformer:
                 logger.warning(f"Requested columns not found in data: {missing}")
             return [c for c in available_cols if c.startswith("close_")]
 
+# ====================== FACTORY ======================
+
+def create_log_returns_transformer(target_columns: Optional[List[str]] = None, **kwargs: Any) -> LogReturnsTranformer:
+    return LogReturnsTranformer(target_columns=target_columns, **kwargs)
+
+# ====================== EXPORTS ======================
+__all__=["LogReturnsTranformer", "create_log_returns_transformer"]
+
+# ====================== SELF CHECK ======================
+if __all__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
+    print("---SELF CHECK: RETURNS MODULE")
+    try:
+        df = pl.DataFrame({
+            "timestamp": range(5),
+            "close_BTC":[100.0, 101.0, 102.0, 101.0, 100.0]
+            "close_DOGE":[1.0, 0.0, 1.0, 2.0, 1.0]
+        }).lazy()
+
+        transformer = LogReturnsTranformer(replace_zeros=True)
+        res = transformer.transform(df)
+
+        if res.is_ok():
+            out = res.unwrap().collect()
+            cols = out.columns
+            print(f"[OK] Transformation Success. columns:{len(cols)}")
+
+            if "log_BTC" in cols and "ret_BTC" in cols:
+                print(f"[OK] Columns Cerate {cols}")
+                print(out.select(["close_BTC", "log_BTC", "ret_BTC"]).head(3))
+            else:
+                print("[FAIL] missing output columns")
+
+            log_doge_zero = out.filter(pl.col("close_DOGE") == 0).select("log_DOGE").item()
+            print(f"[OK] Zero handling (log(0)):{log_doge_zero}(should be near log(epsilon))")
+
+        else:
+            print(f"[FAIL] Error: {res.error}")
+
+    except Exception as e:
+        print(f"[CRITICAL] Module Crash: {e}")
+
+        
