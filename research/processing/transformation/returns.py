@@ -1,7 +1,6 @@
 """
 ATOMIC TRANSFORMATION MODULE (TIER 1)
 Focus: Converting raw nominal prices into mathematical properties (Log-Space & Returns).
-Location: research/processing/transformation/returns.py
 """
 import logging
 import polars as pl
