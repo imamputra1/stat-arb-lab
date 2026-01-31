@@ -1,6 +1,7 @@
 """
-ATOMIC TRANSFORMATION MODULE
+ATOMIC TRANSFORMATION MODULE (TIER 1)
 Focus: Converting raw nominal prices into mathematical properties (Log-Space & Returns).
+Location: research/processing/transformation/returns.py
 """
 import logging
 import polars as pl
@@ -25,8 +26,8 @@ class LogReturnsTransformer:
     2. Log-Return: r_t = y_t - y_{t-1} = ln(P_t / P_{t-1})
     
     Optimization:
-    - Pure LazyFrame operations (No Eager Collection).
-    - Single pass expression building.
+    - Pure LazyFrame operations.
+    - Two-stage execution (Log -> Return) to ensure schema consistency.
     - Handles Log(0) and First-Row Nulls strictly.
     """
 
@@ -55,7 +56,7 @@ class LogReturnsTransformer:
         Executes the Log-Space transformation.
         """
         try:
-            # 1. Schema Inspection (Metadata only, Cheap)
+            # 1. Schema Inspection
             schema_cols = data.collect_schema().names()
             
             # 2. Identify Targets
@@ -65,16 +66,17 @@ class LogReturnsTransformer:
 
             logger.debug(f"Computing Log-Returns for: {targets}")
 
-            # 3. Build Expressions
-            expressions = []
+            # 3. Build Expressions (Split into 2 Stages)
+            log_expressions = []
+            ret_expressions = []
+            
             for col in targets:
-                # Naming: close_BTC -> log_BTC, ret_BTC
+                # Naming
                 base_name = col.replace("close_", "")
                 name_log = f"log_{base_name}"
                 name_ret = f"ret_{base_name}"
 
-                # A. Safe Price Expression
-                # Handle price <= 0 logic lazily
+                # STAGE 1: Log Price Expression
                 price_expr = pl.col(col)
                 if self.replace_zeros:
                     price_expr = (
@@ -82,19 +84,22 @@ class LogReturnsTransformer:
                         .then(pl.lit(self.epsilon))
                         .otherwise(pl.col(col))
                     )
-
-                # B. Log Price Expression
-                # y_t = ln(P_t)
+                
                 log_expr = price_expr.log().alias(name_log)
-                expressions.append(log_expr)
+                log_expressions.append(log_expr)
 
-                # C. Log Return Expression
-                # r_t = diff(y_t). Fill null at index 0 with 0.0 to maintain continuity.
+                # STAGE 2: Log Return Expression
+                # Dependensi: Membutuhkan name_log yang dibuat di Stage 1
                 ret_expr = pl.col(name_log).diff().fill_null(0.0).alias(name_ret)
-                expressions.append(ret_expr)
+                ret_expressions.append(ret_expr)
 
-            # 4. Execute (Lazy)
-            transformed_lf = data.with_columns(expressions)
+            # 4. Execute (Chained)
+            # Chain .with_columns() memastikan kolom log dibuat sebelum diakses oleh return
+            transformed_lf = (
+                data
+                .with_columns(log_expressions)
+                .with_columns(ret_expressions)
+            )
             
             return Ok(transformed_lf)
 
@@ -105,13 +110,11 @@ class LogReturnsTransformer:
     def _identify_targets(self, available_cols: List[str]) -> List[str]:
         """Resolve target columns against available schema."""
         if self.target_columns:
-            # Validate user provided columns exist
             missing = [c for c in self.target_columns if c not in available_cols]
             if missing:
                 logger.warning(f"Requested columns not found in data: {missing}")
             return [c for c in self.target_columns if c in available_cols]
         
-        # Auto-detect defaults
         return [c for c in available_cols if c.startswith("close_")]
 
 # ====================== FACTORY ======================
