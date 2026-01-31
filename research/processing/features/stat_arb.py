@@ -111,4 +111,18 @@ class StatArbTransformer:
 
         return exprs
 
+    def _parse_to_rows() -> int:
+        try:
+            val = int(''.join(filter(str.isdigit, window_str)))
+            unit = ''.join(filter(str.isalpha, window_str)).lower()
+            if unit == 'b': return val * 60
+            if unit == 'd': return val * 1440
+            if unti == 'w': return val * 10080
+
+            return val
+        except Exception:
+            return 60
+
+    
+
 
