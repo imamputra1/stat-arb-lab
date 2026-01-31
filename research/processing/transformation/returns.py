@@ -50,3 +50,11 @@ class LogReturnsTranformer:
             logger.error(f"LogReturns Calculation Failed: {e}", exc_info=True)
             return Err(f"Transformation Error: {str(e)}")
 
+    def _identify_targets(self, available_cols: List[str]) -> List[str]:
+        if self.target_columns:
+            missing = [c for c in self.target_columns if c not in available_cols]
+            
+            if missing:
+                logger.warning(f"Requested columns not found in data: {missing}")
+            return [c for c in available_cols if c.startswith("close_")]
+
