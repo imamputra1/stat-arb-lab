@@ -54,10 +54,11 @@ class StatArbTransformer:
 
     def _build_beta_expressions(self, log_cols: List[str], anchor_col: str) -> List[pl.Expr]:
         exprs = []
+
         for col in log_cols:
             if col == anchor_col: continue
 
-            asset_name = col.replace("log_","")
+            asset_name = col.replace("log_", "")
             beta_name = f"beta_{asset_name}_{self.anchor_symbol}"
 
             cov = pl.rolling_cov(pl.col(col), pl.col(anchor_col), 
@@ -71,12 +72,13 @@ class StatArbTransformer:
 
         return exprs
 
-    def _build_spread_expressions() -> List[pl.Expr]:
+    def _build_spread_expressions(self, log_cols: List[str], anchor_col: str) -> List[pl.Expr]:
         exprs = []
+
         for col in log_cols:
             if col == anchor_col: continue
         
-            asset_name = col.replace("log_","")
+            asset_name = col.replace("log_", "")
             beta_name = f"beta_{asset_name}_{self.anchor_symbol}"
             spread_name = f"spread_{asset_name}"
 
@@ -85,5 +87,28 @@ class StatArbTransformer:
             )
         return exprs
 
+    def _build_zscore_expressions(self, logs_cols: List[str]) -> List[pl.Expr]:
+        exprs = []
+
+        for col in log_cols:
+            if col == self.anchor_symbol.lower(): continue
+
+            asset_name = col.replace("log_","")
+            if asset_name == self.anchor_symbol: continue
+
+            spread_name = f"spread_{asset_name}"
+            z_name = f"z_score_{asset_name}"
+
+            mean = pl.col(spread_name).rolling_mean(window_size=self.zscore_window,
+                                                    min_periods=self.min_periods)
+            std = pl.col(spread_name).rolling_std(window_size=self.zscore_window,
+                                                  min_periods=self.min_periods)
+
+            exprs.append(
+                ((pl.col(spread_name) - mean) / pl.max_horizontal(std, pl.lit(1e-12))).fill_nan(0.0).fill_null(0.0)
+                .alias(z_name)
+            )
+
+        return exprs
 
 
