@@ -2,7 +2,7 @@ import logging
 import json
 import hashlib
 from datetime import datetime, timezone
-from typing import Dict, List, Any, Optional, Set TYPE_CHECKING
+from typing import Dict, List, Any, Optional, TYPE_CHECKING
 from pathlib import Path
 
 if TYPE_CHECKING:
@@ -68,8 +68,8 @@ class MetadataRegisty:
             if additional_metadata:
                 registry_data.update(additional_metadata)
 
-            temp_file = self.metadata_file.with_suffix('.temp')
-            with open(temp_file, 'w', encode='utf-8') as f:
+            temp_file = self.metadata_file.with_suffix('.tmp')
+            with open(temp_file, 'w', encoding='utf-8') as f:
                 json.dump(registry_data, f, indent=2, ensure_ascii=False)
 
             temp_file.replace(self.metadata_file)
@@ -81,3 +81,26 @@ class MetadataRegisty:
             logger.error(f"registry update failed {str(e)}", exc_info=True)
             return Err(f"Metadata Register Error{str(e)}")
 
+    def validate_schema_intgrity() -> 'Result[None, str]':
+
+        violations: List[str] = []
+
+        for col, dtype in schema_dict.items():
+            is_sensitive = any(con.startswith(prefix) for prefix in self._SENSITIVE_PREFIXES)
+        
+        if is_sensitive:
+            dtype_str = str(dtype).lower()
+            is_float64 = any(indicator in dtype_str for indicator in self._FLOAT64_INDICATORS)
+            if not is_float64:
+                violations.append(f"{col}({dtype_str})")
+
+        if violations:
+            error_msg = f"Precision violation: {', '.join(violations)} must be float64"
+
+            logger.error(f"schema integrity validate failed: {error_msg}")
+            return Err(error_msg)
+ 
+        logger.debug(f"Schema integrity valid for  {len(schema_dict)} columns")
+        return Ok(None)
+
+    
