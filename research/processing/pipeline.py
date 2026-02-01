@@ -1,316 +1,126 @@
 """
-PIPELINE ORCHESTRATOR - The Boss of Node B
-Implements ProcessingPipeline protocol with fail-fast execution.
+NODE B PROCESSING PIPELINE (THE CONDUCTOR)
+Focus: End-to-end orchestration from Brown Lake to Silver Lake.
+Location: research/processing/pipeline.py
+Paradigm: Facade Pattern
 """
 import logging
 import polars as pl
-import time
-from typing import Dict, Any, List, Optional, TYPE_CHECKING
+from typing import Any, List
 
-# Type-safe imports for Protocol Checks
-if TYPE_CHECKING:
-    from .protocols import (
-        TimeSeriesAligner, 
-        DataValidator, 
-        FeatureTransformer,
-        RefineryStorage
-    )
-    from ..shared import Result
+# Relative imports from current package
+from .transformation.returns import create_log_returns_transformer
+from .features.market_micro import create_microstructure_transformer
+from .features.stat_arb import create_stat_arb_transformer
+from .storage.metadata_registry import create_metadata_registry
+from .storage.parquet_engine import create_parquet_engine
+
+from ..shared import Err, Result
 
 logger = logging.getLogger("ProcessingPipeline")
 
-class StandardPipeline:
+class NodeBPipeline:
     """
-    Standard implementation of ProcessingPipeline.
-    Acts as the Orchestrator that connects all processing stations.
-    """
+    The main orchestrator for Node B.
+    Refines raw Brown Lake data into high-precision Silver Lake features.
     
+    Sequence:
+    1. Returns (Tier 1) -> 2. Microstructure (Tier 2) -> 3. StatArb (Tier 3) -> 4. Storage
+    """
+
     def __init__(
         self, 
-        aligner: 'TimeSeriesAligner',
-        validator: Optional['DataValidator'] = None,
-        transformers: Optional[List['FeatureTransformer']] = None,
-        storage: Optional['RefineryStorage'] = None
+        silver_path: str,
+        anchor_symbol: str = "BTC",
+        windows: List[str] = ["1h", "4h", "24h"],
+        beta_window: str = "1w",
+        zscore_window: str = "24h"
     ):
-        # Validation dilakukan oleh Factory, tapi double check di sini bagus
-        self.aligner = aligner
-        self.validator = validator
-        self.transformers = transformers or []
-        self.storage = storage
-        
-        # State tracking (Audit Trail)
-        self._steps_log: List[Dict[str, Any]] = []
-        self._execution_stats: Dict[str, Any] = {}
-        self._last_result: Optional['Result[pl.LazyFrame, str]'] = None
-        
-        logger.debug(f"Pipeline initialized. Transformers: {len(self.transformers)}, Storage: {bool(self.storage)}")
-    
-    def add_step(self, name: str, processor: Any) -> None:
-        """Add processing step dynamically (Protocol requirement)."""
-        # Kita import di dalam method untuk menghindari circular import saat runtime
-        from .protocols import FeatureTransformer
-        
-        if isinstance(processor, FeatureTransformer):
-            self.transformers.append(processor)
-            logger.info(f"Added transformer step: {name}")
-        else:
-            logger.warning(f"Processor {name} is not a FeatureTransformer. Ignored.")
-    
-    def execute_multi_asset(
-        self,
-        assets: Dict[str, pl.LazyFrame],
-        **kwargs: Any
-    ) -> 'Result[pl.LazyFrame, str]':
         """
-        Execute full pipeline sequence.
+        Args:
+            silver_path: Target directory for Silver Lake.
+            anchor_symbol: Reference asset for correlation and beta.
+            windows: Rolling windows for Tier 2 features.
+            beta_window: Window for Tier 3 OLS Beta.
+            zscore_window: Window for Tier 3 normalization.
         """
-        from ..shared import Ok, Err
+        self.silver_path = silver_path
+        self.anchor_symbol = anchor_symbol
         
-        # Reset State
-        self._steps_log = []
-        start_time = time.time()
-        self._execution_stats = {"start_time": start_time}
+        # 1. Initialize Storage District
+        self.registry = create_metadata_registry(silver_path)
+        self.storage = create_parquet_engine(silver_path, self.registry)
         
-        try:
-            logger.info("Starting Pipeline Execution...")
-            
-            # --- STEP 1: ALIGNMENT ---
-            # Dict[str, LazyFrame] -> LazyFrame
-            align_res = self._execute_alignment(assets, kwargs)
-            if align_res.is_err():
-                return align_res # Fail Fast
-            
-            current_data = align_res.unwrap()
-            
-            # --- STEP 2: VALIDATION ---
-            # LazyFrame -> LazyFrame
-            if self.validator:
-                valid_res = self._execute_validation(current_data, kwargs)
-                if valid_res.is_err():
-                    return valid_res # Fail Fast
-                current_data = valid_res.unwrap()
-            
-            # --- STEP 3: TRANSFORMATIONS ---
-            # LazyFrame -> LazyFrame
-            if self.transformers:
-                transform_res = self._execute_transformations(current_data, kwargs)
-                if transform_res.is_err():
-                    return transform_res
-                current_data = transform_res.unwrap()
-            
-            # --- STEP 4: STORAGE (Side Effect) ---
-            # LazyFrame -> Path (String)
-            if self.storage:
-                # Storage tidak menghentikan pipeline jika gagal (opsional, bisa diubah policy-nya)
-                self._execute_storage(current_data, kwargs)
-            
-            # --- FINISH ---
-            elapsed = time.time() - start_time
-            self._execution_stats.update({
-                "end_time": time.time(),
-                "elapsed_seconds": elapsed,
-                "status": "success"
-            })
-            
-            logger.info(f"Pipeline Completed in {elapsed:.2f}s. Steps: {len(self._steps_log)}")
-            
-            self._last_result = Ok(current_data)
-            return self._last_result
-            
-        except Exception as e:
-            error_msg = f"Pipeline Critical Crash: {str(e)}"
-            logger.critical(error_msg, exc_info=True)
-            self._last_result = Err(error_msg)
-            return self._last_result
-    
-    def execute_single_asset(
-        self, 
-        data: pl.LazyFrame, 
-        **kwargs: Any
-    ) -> 'Result[pl.LazyFrame, str]':
-        """Execute pipeline for single asset (Bypassing Alignment logic)."""
-        # Wrap single asset to dict to reuse logic, but instruct aligner to skip/passthrough if supported
-        # Or implicitly handled by _execute_alignment logic below
-        assets = {"single_asset": data}
-        kwargs["skip_alignment"] = True
-        return self.execute_multi_asset(assets, **kwargs)
-    
-    def get_step_names(self) -> List[str]:
-        return [step["name"] for step in self._steps_log]
-
-    # ====================== INTERNAL STEPS ======================
-    
-    def _execute_alignment(self, assets: Dict, kwargs: Dict) -> 'Result[pl.LazyFrame, str]':
-        from ..shared import Ok, Err
-        t0 = time.time()
-        
-        # Check Bypass
-        if kwargs.get("skip_alignment"):
-            logger.debug("Skipping alignment (Pass-through)")
-            self._log_step("alignment", "skipped", 0)
-            return Ok(next(iter(assets.values())))
-
-        try:
-            res = self.aligner.align(assets, **kwargs)
-            if res.is_ok():
-                self._log_step("alignment", "success", time.time() - t0, method=self.aligner.method)
-                return res
-            else:
-                self._log_step("alignment", "failed", time.time() - t0, error=res.error)
-                return res
-        except Exception as e:
-            return Err(f"Alignment Crash: {e}")
-
-    def _execute_validation(self, data: pl.LazyFrame, kwargs: Dict) -> 'Result[pl.LazyFrame, str]':
-        from ..shared import Ok, Err
-        t0 = time.time()
-        
-        # Check Bypass
-        if kwargs.get("skip_validation"):
-            self._log_step("validation", "skipped", 0)
-            return Ok(data)
-
-        try:
-            # Ambil rules spesifik dari kwargs jika ada
-            rules_override = kwargs.get("validation_rules")
-            
-            res = self.validator.validate(data, rules_override)
-            
-            if res.is_ok():
-                # Jika validator punya summary, kita log
-                summary = getattr(self.validator, "get_validation_summary", lambda: {})()
-                self._log_step("validation", "success", time.time() - t0, summary=summary)
-                return res
-            else:
-                self._log_step("validation", "failed", time.time() - t0, error=res.error)
-                return res
-        except Exception as e:
-            return Err(f"Validation Crash: {e}")
-
-    def _execute_transformations(self, data: pl.LazyFrame, kwargs: Dict) -> 'Result[pl.LazyFrame, str]':
-        from ..shared import Ok, Err
-        t0 = time.time()
-        current = data
-        
-        for idx, tf in enumerate(self.transformers):
-            try:
-                # Transform
-                res = tf.transform(current, **kwargs)
-                if res.is_err():
-                    self._log_step("transformation", "failed", time.time() - t0, transformer=type(tf).__name__)
-                    return Err(f"Transformer {type(tf).__name__} failed: {res.error}")
-                
-                current = res.unwrap()
-                
-            except Exception as e:
-                return Err(f"Transformer Crash: {e}")
-
-        self._log_step("transformation", "success", time.time() - t0, count=len(self.transformers))
-        return Ok(current)
-
-    def _execute_storage(self, data: pl.LazyFrame, kwargs: Dict) -> None:
-        """
-        Executes storage. 
-        IMPORTANT: We pass LazyFrame directly. We do NOT collect() here.
-        Let the Storage Implementation decide (Sink vs Collect).
-        """
-        t0 = time.time()
-        destination = kwargs.get("storage_destination", "pipeline_output")
-        
-        try:
-            # Storage save mengembalikan Result[str, str] (Path)
-            res = self.storage.save(data, destination, **kwargs)
-            
-            if res.is_ok():
-                self._log_step("storage", "success", time.time() - t0, path=res.unwrap())
-            else:
-                logger.warning(f"Storage failed: {res.error}")
-                self._log_step("storage", "failed", time.time() - t0, error=res.error)
-                
-        except Exception as e:
-            logger.error(f"Storage Crash: {e}")
-
-    def _log_step(self, name: str, status: str, elapsed: float, **info):
-        entry = {
-            "name": name,
-            "status": status,
-            "elapsed": elapsed,
-            **info
+        # 2. Immutable Feature Configuration (For Hashing)
+        self.config = {
+            "anchor_symbol": anchor_symbol,
+            "windows": windows,
+            "beta_window": beta_window,
+            "zscore_window": zscore_window,
+            "pipeline_version": "1.0.0"
         }
-        self._steps_log.append(entry)
-        if status == "failed":
-            logger.error(f"Step {name} Failed: {info.get('error')}")
-        elif status == "success":
-            logger.debug(f"Step {name} OK ({elapsed:.3f}s)")
 
+    def run_batch(self, raw_data: Any) -> Result[str, str]:
+        """
+        Executes the full transformation sequence with strict error tracking.
+        """
+        try:
+            # KOTOR bin SUPERIOR: Auto-lazy conversion
+            # Ensures we always operate in lazy mode regardless of input type.
+            data = raw_data.lazy() if isinstance(raw_data, pl.DataFrame) else raw_data
+            
+            logger.info(f"Initiating batch processing for anchor: {self.anchor_symbol}")
+
+            # --- TIER 1: Log Returns & Standardization ---
+            t1 = create_log_returns_transformer()
+            res_t1 = t1.transform(data)
+            if res_t1.is_err():
+                return Err(f"T1 Failed: {res_t1.error}")
+            lf_t1 = res_t1.unwrap()
+
+            # --- TIER 2: Market Risk Sensors (Volatility & Correlation) ---
+            t2 = create_microstructure_transformer(
+                windows=self.config["windows"], 
+                anchor_symbol=self.anchor_symbol
+            )
+            res_t2 = t2.transform(lf_t1)
+            if res_t2.is_err():
+                return Err(f"T2 Failed: {res_t2.error}")
+            lf_t2 = res_t2.unwrap()
+
+            # --- TIER 3: Stationarity Engine (Beta, Spread, Z-Score) ---
+            t3 = create_stat_arb_transformer(
+                beta_window=self.config["beta_window"],
+                zscore_window=self.config["zscore_window"],
+                anchor_symbol=self.anchor_symbol
+            )
+            res_t3 = t3.transform(lf_t2)
+            if res_t3.is_err():
+                return Err(f"T3 Failed: {res_t3.error}")
+            final_lf = res_t3.unwrap()
+
+            # --- STORAGE: The Vault ---
+            logger.info("Refinement complete. Streaming to Silver Lake...")
+            save_res = self.storage.save(final_lf, feature_params=self.config)
+            
+            if save_res.is_err():
+                return Err(f"Storage Failed: {save_res.error}")
+                
+            logger.info("Batch processing sequence finalized successfully")
+            return save_res
+
+        except Exception as e:
+            logger.error(f"Pipeline Execution Crash: {str(e)}", exc_info=True)
+            return Err(f"Pipeline Fatal Error: {str(e)}")
 
 # ====================== FACTORY ======================
 
-def create_standard_pipeline(
-    aligner: 'TimeSeriesAligner',
-    validator: Optional['DataValidator'] = None,
-    transformers: Optional[List['FeatureTransformer']] = None,
-    storage: Optional['RefineryStorage'] = None
-) -> 'Result[StandardPipeline, str]':
-    """
-    Safe Factory for Pipeline. Ensures all components comply with Protocols.
-    """
-    from ..shared import Ok, Err
-    from .protocols import TimeSeriesAligner, DataValidator, FeatureTransformer, RefineryStorage
-
-    try:
-        # 1. Check Aligner (Mandatory)
-        if not isinstance(aligner, TimeSeriesAligner):
-            return Err(f"Aligner must implement TimeSeriesAligner, got {type(aligner)}")
-
-        # 2. Check Validator
-        if validator and not isinstance(validator, DataValidator):
-            return Err(f"Validator must implement DataValidator, got {type(validator)}")
-
-        # 3. Check Transformers
-        if transformers:
-            for tf in transformers:
-                if not isinstance(tf, FeatureTransformer):
-                    return Err(f"Invalid Transformer: {type(tf)}")
-
-        # 4. Check Storage
-        if storage and not isinstance(storage, RefineryStorage):
-            return Err(f"Storage must implement RefineryStorage, got {type(storage)}")
-
-        return Ok(StandardPipeline(aligner, validator, transformers, storage))
-
-    except Exception as e:
-        return Err(f"Pipeline Factory Error: {e}")
-
+def create_processing_pipeline(
+    silver_path: str,
+    **kwargs: Any
+) -> NodeBPipeline:
+    """Factory function for NodeBPipeline."""
+    return NodeBPipeline(silver_path=silver_path, **kwargs)
 
 # ====================== EXPORTS ======================
-__all__ = ["StandardPipeline", "create_standard_pipeline"]
-
-
-# ====================== SELF CHECK ======================
-def _test_pipeline_wiring():
-    """Simple wiring check on import."""
-    try:
-        # Import Aligner & Validator Factories
-        from .alignment import get_aligner
-        from .validation import get_default_validator
-        
-        # Mock Init
-        aligner = get_aligner("asof").unwrap()
-        validator = get_default_validator().unwrap()
-        
-        # Test Factory
-        pipe_res = create_standard_pipeline(aligner, validator)
-        
-        if pipe_res.is_ok():
-            logger.debug("Pipeline Wiring Check: OK")
-        else:
-            logger.warning(f"Pipeline Wiring Check Failed: {pipe_res.error}")
-            
-    except Exception as e:
-        # Jangan crash jika module lain belum siap, cuma log warning
-        logger.debug(f"Pipeline Wiring Skipped (Dependencies not ready): {e}")
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
-    _test_pipeline_wiring()
+__all__ = ["NodeBPipeline", "create_processing_pipeline"]
