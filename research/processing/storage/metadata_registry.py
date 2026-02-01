@@ -81,7 +81,7 @@ class MetadataRegisty:
             logger.error(f"registry update failed {str(e)}", exc_info=True)
             return Err(f"Metadata Register Error{str(e)}")
 
-    def validate_schema_intgrity() -> 'Result[None, str]':
+    def validate_schema_intgrity(self, schema_dict: Dict[str, Any]) -> 'Result[None, str]':
 
         violations: List[str] = []
 
@@ -102,5 +102,20 @@ class MetadataRegisty:
  
         logger.debug(f"Schema integrity valid for  {len(schema_dict)} columns")
         return Ok(None)
+
+    def load_registry(self) -> 'Result[Dict[str, Any] str]':
+
+        try:
+            if not self.metadata_file.exists():
+                return Err(f"Metadata not found: {self.metadata_file}")
+
+            with open(self.metadata_file, 'r', encoding='utf-8') as f:
+                metadata = json.load()
+
+            return Ok(metadata)
+
+        except Exception as e:
+            logger.error(f"Failed to laod metadata: {str(e)}")
+            return Err(f"registry load Failed: {str(e)}")
 
     
