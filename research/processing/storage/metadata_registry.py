@@ -1,3 +1,4 @@
+from _typeshed import OpenBinaryModeReading
 import logging
 import json
 import hashlib
@@ -34,7 +35,7 @@ class MetadataRegisty:
         try:
             config_str = json.dumps(config, sort_keys=True, default=str)
 
-            if config_str in self._cached_hashes:
+            if config_str in self._cached_hashes:``
                 return self._cached_hashes[config_str]
 
             hash_job = hashlib.sha256(config_str.encode())
@@ -118,4 +119,30 @@ class MetadataRegisty:
             logger.error(f"Failed to laod metadata: {str(e)}")
             return Err(f"registry load Failed: {str(e)}")
 
-    
+    def verify_consistency(self, current_params: Dict[str, Any], expected_params: Optional[Dict[str, Any]] = None) -> 'Result[boo, str]':
+        try:
+            if expected_params is None:
+                registry_res = self.load_registry()
+                if registry_res.is_err():
+                    return f"Consistency check is failed: {registry_res.error}"
+          
+                expected_params = registry_res.unwrap().get("feature_params",{})
+
+            current_hash = self.generate_feature_hash(current_params)
+            expected_hash = self.generate_feature_hash(expected_hash)
+
+            is_consistent = (current_hash == expected_hash)
+                if not is_consistent:
+                    logger.warning(f"Hash mismatch: {current_hash[:8]} vs {expected_hash[:8]}")
+
+                return Ok(is_consistent)
+
+        except Exception as e:
+            return Err(f"Consistency Verifications error: {str(e)}")
+
+# ====================== FACTORY ======================
+
+def create_metadata_registry(storage_path: str, **kwargs: Any) -> MetadataRegisty:
+    return MetadataRegisty(storage_path=storage_path, **kwargs)
+
+__all__ = ["MetadataRegisty", "create_metadata_registry"]
