@@ -10,7 +10,7 @@ import numpy as np
 import polars as pl
 
 # Path correction: 5 dots to reach research/shared/ from strategy/models/library/
-from .....shared import Result, Ok, Err
+from ....shared import Result, Ok, Err
 
 from ..base import StrategyModel, BatchStrategyModel
 
@@ -162,6 +162,9 @@ class KalmanFilter(StrategyModel, BatchStrategyModel):
             return Ok(True)
         except Exception as e:
             return Err(f"Batch update failed: {str(e)}")
+
+    def should_retrain(self, metrics: Dict[str, float]) -> bool:
+        return False
 
     def get_state(self) -> Result[Dict[str, Any], str]:
         return Ok({

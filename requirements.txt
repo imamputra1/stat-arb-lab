@@ -16,3 +16,11 @@ yfinance>=0.2.36
 # Core Data Engines
 duckdb>=0.9.0
 polars>=0.20.0
+zstandard>=0.22.0
+
+# --- VISUALIZATION (NODE D) ---
+matplotlib>=3.8.0
+seaborn>=0.13.0
+
+# --- UTILS ---
+typing-extensions>=4.8.0
