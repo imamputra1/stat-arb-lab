@@ -10,9 +10,9 @@ import numpy as np
 import polars as pl
 
 # Path correction: 5 dots to reach research/shared/ from strategy/models/library/
-from ...shared import Result, Ok, Err
+from .....shared import Result, Ok, Err
 
-from .base import StrategyModel, BatchStrategyModel
+from ..base import StrategyModel, BatchStrategyModel
 
 logger = logging.getLogger("KalmanArbitrage")
 
