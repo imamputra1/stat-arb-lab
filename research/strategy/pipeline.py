@@ -1,230 +1,329 @@
 """
-ADVANCED STRATEGY PIPELINE (THE COMMANDER)
+QUANTUM STRATEGY PIPELINE (THE BLIND COMMANDER) - V9.0 INDUSTRIAL SYNC
 Location: research/strategy/pipeline.py
-Focus: End-to-end execution with full state preservation for Node D diagnostics.
+Focus: Pure orchestration without trading logic. Separates Math (Engine) from Logic (Signal).
+Architecture: Gate-City Pattern with dynamic strategy injection and complete separation of concerns.
 """
-import json
+
 import sys
 import logging
+import warnings
 from pathlib import Path
-from datetime import datetime
-from typing import Dict, Any, Optional
-import polars as pl
-import argparse
+from datetime import datetime, timedelta
+from typing import Dict, Any, Optional, List
+from dataclasses import dataclass, field
+from enum import Enum, auto
 
-# --- PATH INJECTION ---
+import polars as pl
+
+# Suppress warnings for clean industrial logs
+warnings.filterwarnings('ignore')
+
+# --- PATH CONFIGURATION ---
 PROJECT_ROOT = Path(__file__).parent.parent.parent.absolute()
 if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-# ABSOLUTE IMPORTS: Stabil & Industrial Standard
+# --- QUANTUM IMPORTS (Absolute Paths) ---
+from research.shared import Ok, Err, Result
 from research.strategy.data.loader import create_silver_loader
 from research.strategy.models.library.kalman import KalmanFilter
 from research.strategy.engine.vectorized import create_backtest_engine
-from research.shared import Ok, Err, Result
+from research.strategy.signals import get_signal_strategy
+from research.strategy.optimization.objective import QuantumScoreKeeper
 
-# --- SETUP LOGGING ---
-def setup_advanced_logging() -> logging.Logger:
-    log_dir = PROJECT_ROOT / "logs" / "strategy_pipeline"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    logger = logging.getLogger("StrategyPipeline")
-    logger.setLevel(logging.INFO)
-    
-    formatter = logging.Formatter('%(asctime)s | %(levelname)-8s | %(message)s', datefmt='%H:%M:%S')
-    
-    ch = logging.StreamHandler()
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
-    
-    fh = logging.FileHandler(log_dir / f"pipeline_{timestamp}.log")
-    fh.setFormatter(formatter)
-    logger.addHandler(fh)
-    
-    logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)-8s | %(message)s',
-    datefmt='%H:%M:%S'
-    )
-    return logger
+# --- ENUMERATIONS ---
+class PipelinePhase(Enum):
+    """Pipeline execution phases for state tracking."""
+    INITIALIZATION = auto()
+    DATA_LOADING = auto()
+    MODEL_PROCESSING = auto()
+    SIGNAL_GENERATION = auto()
+    RISK_MANAGEMENT = auto()
+    EXECUTION_SIMULATION = auto()
+    ANALYTICS_GENERATION = auto()
+    PERSISTENCE = auto()
+    COMPLETION = auto()
+    FAILURE = auto()
 
-logger = setup_advanced_logging()
+class ExecutionMode(Enum):
+    """Pipeline execution modes synced with War Room."""
+    BACKTEST = auto()
+    PAPER_TRADE = auto()
+    LIVE = auto()
+    OPTIMIZATION = auto()
 
-class AdvancedStrategyPipeline:
-    def __init__(
-        self,
-        silver_path: Optional[str] = None,
-        warmup_days: int = 30,
-        entry_threshold: float = 2.0,
-        exit_threshold: float = 0.5,
-        **model_params
-    ):
-        # FIX: Definisikan silver_path PERTAMA KALI
-        self.silver_path = Path(silver_path) if silver_path else PROJECT_ROOT / "data" / "silver"
-        self.warmup_days = warmup_days
-        self.entry_threshold = entry_threshold
-        self.exit_threshold = exit_threshold
+# --- DATA MODELS ---
+@dataclass
+class PipelineConfig:
+    """Complete pipeline configuration synchronized with HyperParallelEngine."""
+    execution_id: str
+    target_symbol: str
+    anchor_symbol: str
+    start_date: str
+    end_date: str
+    execution_mode: ExecutionMode = ExecutionMode.BACKTEST
+    strategy_name: str = "kalman_crossover"
+    warmup_days: int = 30
+    strategy_params: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "execution_id": self.execution_id,
+            "target": self.target_symbol,
+            "anchor": self.anchor_symbol,
+            "start": self.start_date,
+            "end": self.end_date,
+            "strategy": self.strategy_name,
+            "params": self.strategy_params
+        }
+
+@dataclass
+class PipelineState:
+    """Complete state tracking for Node D diagnostics."""
+    config: PipelineConfig
+    current_phase: PipelinePhase = PipelinePhase.INITIALIZATION
+    start_time: datetime = field(default_factory=datetime.now)
+    end_time: Optional[datetime] = None
+    errors: List[str] = field(default_factory=list)
+    artifacts: Dict[str, Any] = field(default_factory=dict)
+    metrics: Dict[str, Any] = field(default_factory=dict)
+    
+    @property
+    def duration(self) -> Optional[timedelta]:
+        return (self.end_time or datetime.now()) - self.start_time
+
+# --- THE BLIND COMMANDER ORCHESTRATOR ---
+class QuantumStrategyOrchestrator:
+    """
+    Orchestration layer coordinating all pipeline components.
+    Separates Math (Kalman) from Logic (SignalGenerator).
+    """
+    
+    def __init__(self, config: PipelineConfig):
+        self.config = config
+        self.state = PipelineState(config)
+        self.logger = self._setup_logging()
         
-        # 1. Initialize Logistics
-        self.loader = create_silver_loader(str(self.silver_path))
+        # Component placeholders
+        self.loader = None
+        self.math_model = None
+        self.signal_engine = None
         
-        # 2. Initialize Brain (Kalman Filter)
-        self.model = KalmanFilter(
-            process_noise=model_params.get('process_noise', 1e-5),
-            observation_noise=model_params.get('observation_noise', 1e-4),
-            min_periods=self.warmup_days * 1440
+        self.logger.info(f"🚀 Orchestrator initialized | ID: {config.execution_id}")
+
+    def _setup_logging(self) -> logging.Logger:
+        logger = logging.getLogger(f"Orchestrator.{self.config.execution_id}")
+        logger.setLevel(logging.INFO)
+        if not logger.handlers:
+            formatter = logging.Formatter('%(asctime)s | %(levelname)-8s | %(message)s')
+            ch = logging.StreamHandler()
+            ch.setFormatter(formatter)
+            logger.addHandler(ch)
+        return logger
+
+    def execute(self) -> Result[PipelineState, str]:
+        """Execute complete pipeline with Gate-City orchestration."""
+        try:
+            # 1. Initialization
+            self.state.current_phase = PipelinePhase.INITIALIZATION
+            self._initialize_components()
+
+            # 2. Data Loading (Silver Lake Integration)
+            self.state.current_phase = PipelinePhase.DATA_LOADING
+            load_res = self._load_market_data()
+            if load_res.is_err(): return Err(load_res.error)
+
+            # 3. Model Processing (Pure Math - Kalman)
+            self.state.current_phase = PipelinePhase.MODEL_PROCESSING
+            math_res = self._process_mathematical_model()
+            if math_res.is_err(): return Err(math_res.error)
+
+            # 4. Signal Generation (Logic Injection)
+            self.state.current_phase = PipelinePhase.SIGNAL_GENERATION
+            self._generate_trading_signals()
+
+            # 5. Execution & Simulation (PnL Calculation)
+            self.state.current_phase = PipelinePhase.EXECUTION_SIMULATION
+            self._simulate_execution()
+
+            # 6. Analytics (Neuro-Scoring)
+            self.state.current_phase = PipelinePhase.ANALYTICS_GENERATION
+            self._generate_analytics()
+
+            # 7. Persistence
+            self.state.current_phase = PipelinePhase.PERSISTENCE
+            self._persist_results()
+
+            self.state.end_time = datetime.now()
+            self.state.current_phase = PipelinePhase.COMPLETION
+            return Ok(self.state)
+
+        except Exception as e:
+            self.state.end_time = datetime.now()
+            self.state.current_phase = PipelinePhase.FAILURE
+            error_msg = f"Pipeline Crash: {str(e)}"
+            self.state.errors.append(error_msg)
+            return Err(error_msg)
+
+    def _initialize_components(self):
+        """Standardizing components across Node S & O."""
+        # Data Loader initialization
+        self.loader = create_silver_loader(str(PROJECT_ROOT / "data" / "silver"))
+        
+        # Math Model (Pure Kalman - No logic)
+        self.math_model = KalmanFilter(
+            process_noise=self.config.strategy_params.get("process_noise", 1e-5),
+            observation_noise=self.config.strategy_params.get("observation_noise", 1e-4),
+            min_periods=self.config.warmup_days * 1440
         )
         
-        # Debugging storage
-        self.debug_dir = PROJECT_ROOT / "research" / "debug_data"
-        self.debug_dir.mkdir(parents=True, exist_ok=True)
+        # Signal Brain injection
+        self.signal_engine = get_signal_strategy(
+            self.config.strategy_name,
+            self.config.strategy_params
+        )
+        self.logger.info(f"✓ Components synced: {self.config.strategy_name}")
+
+    def _load_market_data(self) -> Result[pl.LazyFrame, str]:
+        """Lazy loading from Silver Lake."""
+        res = self.loader.load(
+            start_date=self.config.start_date,
+            end_date=self.config.end_date,
+            symbols=[self.config.target_symbol, self.config.anchor_symbol]
+        )
+        if res.is_ok():
+            self.state.artifacts["lazy_frame"] = res.unwrap()
+            return Ok(self.state.artifacts["lazy_frame"])
+        return Err(res.error)
+
+    def _process_mathematical_model(self) -> Result[Dict[str, Any], str]:
+        """Pure Math Engine processing."""
+        engine = create_backtest_engine(
+            loader=self.loader,
+            model=self.math_model,
+            entry_threshold=999.0, # Blind mode: Disable internal logic
+            exit_threshold=999.0,
+            warmup_days=self.config.warmup_days
+        )
         
-        logger.info(f"Pipeline Ignited | Path: {self.silver_path}")
+        res = engine.run(
+            start_date=self.config.start_date,
+            end_date=self.config.end_date,
+            symbols=[self.config.target_symbol, self.config.anchor_symbol]
+        )
+        
+        if res.is_ok():
+            raw_math = res.unwrap()
+            self.state.artifacts["math_df"] = pl.DataFrame({
+                "timestamp": raw_math["timestamps"],
+                "z_score": raw_math["signals"],
+                "beta": [s["beta"] for s in raw_math["states"]],
+                "target_price": raw_math["target_values"],
+                "anchor_price": raw_math["feature_values"][0]
+            })
+            return Ok(raw_math)
+        return Err(res.error)
 
+    def _generate_trading_signals(self):
+        """Applying Logic brain to Math output."""
+        math_df = self.state.artifacts["math_df"]
+        # SignalGenerator.generate returns df with 'position' column
+        signal_df = self.signal_engine.generate(math_df)
+        self.state.artifacts["processed_df"] = signal_df
+        self.logger.info("✓ Signal generation complete")
 
-    def execute_pair_arbitrage(self, target: str, anchor: str, start: str, end: str) -> Result[Dict[str, Any], str]:
-        try:
-            # Generate ID unik untuk sinkronisasi metadata
-            exec_id = f"{target}_{anchor}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            
-            # 1. Setup Engine
-            engine = create_backtest_engine(
-                loader=self.loader, model=self.model,
-                entry_threshold=self.entry_threshold,
-                exit_threshold=self.exit_threshold,
-                warmup_days=self.warmup_days
-            )
-            
-            # 2. Run
-            res = engine.run(start_date=start, end_date=end, symbols=[target, anchor])
-            if res.is_err(): return Err(res.error)
-            
-            # 3. Save Metadata (The Dynamic Key)
-            meta = {
-                "target_symbol": target, "anchor_symbol": anchor,
-                "entry_threshold": self.entry_threshold, "exit_threshold": self.exit_threshold,
-                "process_noise": self.model.get_hyperparameters()["process_noise"]
-            }
-            meta_path = PROJECT_ROOT / "research" / "results" / f"metadata_{exec_id}.json"
-            with open(meta_path, 'w') as f: json.dump(meta, f)
-            
-            # 4. Enrich & Save Data
-            results_dict = res.unwrap()
-            final_df = self._assemble_and_enrich(results_dict, target, anchor)
-            self._save_results(final_df, target, anchor)
-            self._generate_cli_report(final_df, target)
-            
-            return Ok({"status": "completed", "id": exec_id})
-        except Exception as e:
-            return Err(str(e))
-
-
-    def _assemble_and_enrich(self, raw_data: Dict[str, Any], target: str, anchor: str) -> pl.DataFrame:
-        """Converts engine dictionary output into a professional debug-ready DataFrame."""
-        # Ekstrak state Kalman (beta, alpha, z_score)
-        states = raw_data["states"]
-        df = pl.DataFrame({
-            "timestamp": raw_data["timestamps"],
-            f"log_{target}": raw_data["target_values"],
-            f"log_{anchor}": raw_data["feature_values"][0],
-            "z_score": raw_data["signals"],
-            "beta": [s["beta"] for s in states],
-            "position": raw_data.get("positions", [0] * len(states)) # Fallback if not provided
-        })
-
-        # Hitung PnL di level Pipeline (KOTOR bin SUPERIOR)
+    def _simulate_execution(self):
+        """PnL Calculation (Accounting Layer)."""
+        df = self.state.artifacts["processed_df"]
+        
+        # Vectorized PnL: position_prev * price_diff
         df = df.with_columns([
-            (pl.col("position").shift(1).fill_null(0) * pl.col(f"log_{target}").diff()).alias("pnl_raw")
+            (pl.col("position").shift(1).fill_null(0) * pl.col("target_price").diff()).alias("pnl_step")
         ]).with_columns([
-            pl.col("pnl_raw").cum_sum().alias("cumulative_returns")
+            pl.col("pnl_step").cum_sum().alias("cumulative_returns")
         ])
         
-        return df
+        self.state.artifacts["final_df"] = df
+        self.logger.info(f"✓ Simulation complete: {df.height} bars processed")
 
-    def _save_results(self, df: pl.DataFrame, target: str, anchor: str):
-        """Saves artifacts for forensic inspection by Node D."""
-        # 1. Latest Run (Overwrite for fast inspection)
-        latest_path = self.debug_dir / "latest_run.parquet"
-        df.write_parquet(latest_path, compression="zstd")
+    def _generate_analytics(self):
+        """Neuro-ScoreKeeper evaluation."""
+        df = self.state.artifacts["final_df"]
+        score_keeper = QuantumScoreKeeper()
+        eval_res = score_keeper.evaluate(df)
         
-        # 2. Archived Run (Timestamped)
-        results_dir = PROJECT_ROOT / "research" / "results"
-        results_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-        archive_path = results_dir / f"arb_{target}_{anchor}_{ts}.parquet"
-        df.write_parquet(archive_path, compression="zstd")
-        
-        logger.info(f"STORAGE | Results archived to {archive_path}")
-
-    def _generate_cli_report(self, df: pl.DataFrame, target: str):
-        """Final summary for the pit wall."""
-        trades = df.filter(pl.col("position").diff() != 0).height
-        pnl = df["cumulative_returns"].tail(1)[0]
-        
-        print("\n" + "="*50)
-        print(f" STRATEGY REPORT: {target}-BTC")
-        print("-" * 50)
-        print(f" Total Trades : {trades}")
-        print(f" Final PnL    : {pnl:.6f}")
-        print("="*50 + "\n")
-
-"""
-ADVANCED STRATEGY PIPELINE (DYNAMIC COMMANDER)
-Location: research/strategy/pipeline.py
-Focus: Scalable research with CLI parameter injection.
-"""
-# ... (impor dan class AdvancedStrategyPipeline tetap sama) ...
-
-def main():
-    """Main execution function with FULL dynamic argument parsing."""
-    
-    parser = argparse.ArgumentParser(
-        description="Execute Dynamic Kalman Arbitrage Pipeline",
-        formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    
-    # Assets & Period
-    parser.add_argument("--target", type=str, default="DOGE", help="Target symbol")
-    parser.add_argument("--anchor", type=str, default="BTC", help="Anchor symbol")
-    parser.add_argument("--start", type=str, default="2024-01-01", help="YYYY-MM-DD")
-    parser.add_argument("--end", type=str, default="2024-12-31", help="YYYY-MM-DD")
-    
-    # LOGIC PARAMETERS (THE TUNING KNOBS)
-    parser.add_argument("--entry-threshold", type=float, default=2.0, help="Entry Z-Score")
-    parser.add_argument("--exit-threshold", type=float, default=0.5, help="Exit Z-Score")
-    parser.add_argument("--warmup", type=int, default=30, help="Warmup days")
-    
-    # BRAIN PARAMETERS (KALMAN TUNING)
-    parser.add_argument("--process-noise", type=float, default=1e-5, help="Q: Adaptation speed")
-    parser.add_argument("--obs-noise", type=float, default=1e-4, help="R: Measurement confidence")
-    
-    args = parser.parse_args()
-    
-    try:
-        # Injeksi seluruh argumen ke dalam Pipeline
-        pipeline = AdvancedStrategyPipeline(
-            warmup_days=args.warmup,
-            entry_threshold=args.entry_threshold,
-            exit_threshold=args.exit_threshold,
-            process_noise=args.process_noise,
-            observation_noise=args.obs_noise
-        )
-        
-        result = pipeline.execute_pair_arbitrage(
-            target=args.target,
-            anchor=args.anchor,
-            start=args.start,
-            end=args.end
-        )
-        
-        if result.is_ok():
-            logger.info("✅ DYNAMIC EXECUTION SUCCESS")
+        if eval_res.is_ok():
+            metrics = eval_res.unwrap()
+            self.state.metrics = {
+                "smart_score": metrics.smart_score,
+                "sharpe": metrics.sharpe_ratio,
+                "pnl": metrics.total_return,
+                "trades": metrics.total_trades,
+                "win_rate": metrics.win_rate,
+                "max_dd": metrics.max_drawdown
+            }
+            self.logger.info(f"🏁 Score: {metrics.smart_score:.4f}")
         else:
-            logger.error(f"❌ PIPELINE FAILED: {result.error}")
-                
+            self.state.warnings.append(f"Scoring failed: {eval_res.error}")
+
+    def _persist_results(self):
+        """Archiving mission artifacts."""
+        df = self.state.artifacts["final_df"]
+        res_dir = PROJECT_ROOT / "research" / "results"
+        res_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save Parquet for Node O / Dashboard
+        path = res_dir / f"arb_{self.config.target_symbol}_{self.config.anchor_symbol}_{self.config.execution_id}.parquet"
+        df.write_parquet(path, compression="zstd")
+        self.state.artifacts["parquet_path"] = path
+
+    def execute_pair_arbitrage(self, target: str, anchor: str, start: str, end: str) -> Result[Dict[str, Any], str]:
+        """Compatibility layer for HyperParallelEngine."""
+        self.config.target_symbol = target
+        self.config.anchor_symbol = anchor
+        self.config.start_date = start
+        self.config.end_date = end
+        
+        res = self.execute()
+        if res.is_ok():
+            state = res.unwrap()
+            return Ok({
+                "id": state.config.execution_id,
+                "metrics": state.metrics,
+                "path": state.artifacts.get("parquet_path")
+            })
+        return Err(res.error)
+
+# --- FACTORY & COMPATIBILITY ---
+class AdvancedStrategyPipeline(QuantumStrategyOrchestrator):
+    """Alias for HyperParallelEngine compatibility."""
+    def __init__(self, **kwargs):
+        # Extract core params
+        config = PipelineConfig(
+            execution_id=f"EXEC_{datetime.now().strftime('%H%M%S')}",
+            target_symbol=kwargs.get("target", "DOGE"),
+            anchor_symbol=kwargs.get("anchor", "BTC"),
+            start_date=kwargs.get("start", "2024-01-01"),
+            end_date=kwargs.get("end", "2024-12-31"),
+            warmup_days=kwargs.get("warmup_days", 30),
+            strategy_params=kwargs
+        )
+        super().__init__(config)
+
+def create_quantum_pipeline(**kwargs) -> Result[QuantumStrategyOrchestrator, str]:
+    """Gate-City Entry Point."""
+    try:
+        pipeline = AdvancedStrategyPipeline(**kwargs)
+        return Ok(pipeline)
     except Exception as e:
-        logger.error(f"💥 CRASH: {str(e)}", exc_info=True)
+        return Err(str(e))
 
 if __name__ == "__main__":
-    main()
+    # Test run for Ryzen 5 safety
+    pipeline = AdvancedStrategyPipeline(entry_threshold=2.0, exit_threshold=0.5)
+    result = pipeline.execute_pair_arbitrage("DOGE", "BTC", "2024-01-01", "2024-01-10")
+    if result.is_ok():
+        print(f"✅ Test Success: {result.unwrap()['id']}")
+    else:
+        print(f"❌ Test Failed: {result.error}")

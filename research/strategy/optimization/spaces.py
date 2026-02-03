@@ -1,7 +1,7 @@
 """
-INDUSTRIAL PARAMETER SPACES (THE EXTREME AMMO DEPOT) - V4.6
+INDUSTRIAL PARAMETER SPACES (THE EXTREME AMMO DEPOT) - V5.0 FINAL
 Location: research/strategy/optimization/spaces.py
-Focus: Extreme boundary testing for Kalman Filter Overfitting.
+Focus: Absolute synchronization with SignalGenerator and Kamikaze diagnostics.
 """
 import numpy as np
 import itertools
@@ -13,18 +13,17 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 
-# --- PATH INJECTION & SHARED SYNC ---
+# --- PATH INJECTION ---
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.absolute()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from ...shared import Result, Ok, Err
+from research.shared import Result, Ok, Err
 
 class SpaceStrategy(Enum):
     SURGICAL = auto()
     SHOTGUN = auto()
-    ADAPTIVE = auto()
-    CUSTOM = auto()
+    KAMIKAZE = auto() # Tambahkan ini
 
 class ParameterType(Enum):
     THRESHOLD = auto()
@@ -33,25 +32,19 @@ class ParameterType(Enum):
     STRUCTURAL = auto()
 
 @dataclass
-class ParameterDimension:
-    name: str
-    values: List[Any]
-    param_type: ParameterType
-    distribution: str = "linear"
-    priority: int = 1
-
-@dataclass
 class SearchResult:
     params: Dict[str, Any]
     label: str
     space_hash: str = ""
-    priority_score: float = 1.0
+
+@dataclass
+class ParameterDimension:
+    name: str
+    values: List[Any]
+    param_type: ParameterType
 
 class QuantumParameterSpace:
-    """
-    Industrial-strength parameter space generator.
-    Optimized for Extreme Boundary Testing (Noisy vs Frozen Beta).
-    """
+    """Industrial parameter space generator synchronized with SignalGenerator."""
     def __init__(self, name: str, dimensions: List[ParameterDimension], strategy: SpaceStrategy):
         self.name = name
         self.dimensions = dimensions
@@ -59,12 +52,11 @@ class QuantumParameterSpace:
 
     @classmethod
     def surgical_grid(cls) -> 'QuantumParameterSpace':
-        """Precision search around theoretical optimum."""
         dimensions = [
-            ParameterDimension("entry_threshold", [1.8, 2.0, 2.2], ParameterType.THRESHOLD, priority=9),
-            ParameterDimension("exit_threshold", [0.5, 0.8], ParameterType.THRESHOLD, priority=8),
-            ParameterDimension("process_noise", [1e-6, 1e-5], ParameterType.NOISE, distribution="log"),
-            ParameterDimension("observation_noise", [1e-4, 1e-3], ParameterType.NOISE, distribution="log"),
+            ParameterDimension("entry_threshold", [1.8, 2.0, 2.2], ParameterType.THRESHOLD),
+            ParameterDimension("exit_threshold", [0.5, 0.8], ParameterType.THRESHOLD),
+            ParameterDimension("process_noise", [1e-6, 1e-5], ParameterType.NOISE),
+            ParameterDimension("observation_noise", [1e-4, 1e-3], ParameterType.NOISE),
             ParameterDimension("use_intercept", [True], ParameterType.STRUCTURAL),
             ParameterDimension("warmup_days", [30], ParameterType.TEMPORAL)
         ]
@@ -72,73 +64,45 @@ class QuantumParameterSpace:
 
     @classmethod
     def dirty_shotgun(cls) -> 'QuantumParameterSpace':
-        """
-        EXTREME BOUNDARY TESTING: Menghancurkan Overfitting.
-        Logic: Perluas Log-Range Q & R, Tambahkan Intercept Toggle, Hapus Warmup Variable.
-        """
         dimensions = [
-            # 1. Expand Entry Range: Menangkap ekor distribusi yang lebih gemuk
-            ParameterDimension("entry_threshold", 
-                              np.round(np.arange(1.0, 4.0, 0.2), 2).tolist(), 
-                              ParameterType.THRESHOLD, priority=10),
-            
+            ParameterDimension("entry_threshold", np.round(np.arange(1.5, 3.5, 0.5), 2).tolist(), ParameterType.THRESHOLD),
             ParameterDimension("exit_threshold", [0.5], ParameterType.THRESHOLD),
-            
-            # 2. Extreme Q (Process Noise): Dari Frozen Beta (1e-9) ke Hyper-Adaptive (1e-3)
-            ParameterDimension("process_noise", 
-                              np.logspace(-9, -3, 7).tolist(), 
-                              ParameterType.NOISE, distribution="log", priority=9),
-            
-            # 3. Extreme R (Obs Noise): Dari Strict (1e-5) ke Noisy Market (1.0)
-            ParameterDimension("observation_noise", 
-                              np.logspace(-5, 0, 6).tolist(), 
-                              ParameterType.NOISE, distribution="log", priority=9),
-            
-            # 4. SENJATA RAHASIA: Intercept Switch (alpha=0 vs alpha adaptive)
-            ParameterDimension("use_intercept", [True, False], ParameterType.STRUCTURAL, priority=10),
-            
-            # 5. Static Warmup: Menghemat komputasi untuk parameter yang berdampak
+            ParameterDimension("process_noise", np.logspace(-8, -4, 5).tolist(), ParameterType.NOISE),
+            ParameterDimension("observation_noise", np.logspace(-4, -1, 4).tolist(), ParameterType.NOISE),
+            ParameterDimension("use_intercept", [True, False], ParameterType.STRUCTURAL),
             ParameterDimension("warmup_days", [30], ParameterType.TEMPORAL)
         ]
-        return cls("extreme_shotgun", dimensions, SpaceStrategy.SHOTGUN)
+        return cls("shotgun", dimensions, SpaceStrategy.SHOTGUN)
+
+    @classmethod
+    def kamikaze_mode(cls) -> 'QuantumParameterSpace':
+        """FORCED TRADE MODE: Memastikan pipeline dan dashboard menerima data."""
+        dimensions = [
+            ParameterDimension("entry_threshold", [0.5, 0.8], ParameterType.THRESHOLD),
+            ParameterDimension("exit_threshold", [0.0], ParameterType.THRESHOLD),
+            ParameterDimension("process_noise", [1e-9], ParameterType.NOISE),
+            ParameterDimension("observation_noise", [1e-2], ParameterType.NOISE),
+            ParameterDimension("use_intercept", [True], ParameterType.STRUCTURAL),
+            ParameterDimension("warmup_days", [30], ParameterType.TEMPORAL)
+        ]
+        return cls("kamikaze", dimensions, SpaceStrategy.KAMIKAZE)
 
     def generate(self) -> Generator[Result[SearchResult, str], None, None]:
-        """Quantum generation with Hard Constraint guards."""
         space_hash = self._compute_hash()
-        dim_values = [dim.values for dim in self.dimensions]
-        keys = [dim.name for dim in self.dimensions]
-        
-        for combo in itertools.product(*dim_values):
+        keys = [d.name for d in self.dimensions]
+        vals = [d.values for d in self.dimensions]
+        for combo in itertools.product(*vals):
             params = dict(zip(keys, combo))
-            
-            # Constraint: Entry must be strictly > Exit
-            if params.get("entry_threshold", 0) <= params.get("exit_threshold", 0):
-                continue
-
-            try:
-                # Generate specific label for extreme diagnostics
-                label = f"Q{params['process_noise']:.0e}_R{params['observation_noise']:.0e}_INT{params['use_intercept']}"
-                yield Ok(SearchResult(params=params, label=label, space_hash=space_hash))
-            except Exception as e:
-                yield Err(f"Space Gen Failure: {str(e)}")
+            if params.get("entry_threshold", 0) <= params.get("exit_threshold", 0): continue
+            label = f"Q{params['process_noise']:.0e}_R{params['observation_noise']:.0e}_INT{params['use_intercept']}"
+            yield Ok(SearchResult(params=params, label=label, space_hash=space_hash))
 
     def _compute_hash(self) -> str:
         data_str = json.dumps([(d.name, d.values) for d in self.dimensions], sort_keys=True)
         return hashlib.md5(data_str.encode()).hexdigest()[:12]
 
-# --- LEGACY COMPATIBILITY ---
-class ParameterSpace:
-    @staticmethod
-    def surgical_grid():
-        for res in QuantumParameterSpace.surgical_grid().generate():
-            if res.is_ok(): yield res.unwrap().params
-
-    @staticmethod
-    def dirty_shotgun():
-        for res in QuantumParameterSpace.dirty_shotgun().generate():
-            if res.is_ok(): yield res.unwrap().params
-
 def get_parameter_space(name: str) -> Result[QuantumParameterSpace, str]:
     if name == "surgical": return Ok(QuantumParameterSpace.surgical_grid())
     if name == "shotgun": return Ok(QuantumParameterSpace.dirty_shotgun())
+    if name == "kamikaze": return Ok(QuantumParameterSpace.kamikaze_mode())
     return Err(f"Space not found: {name}")
