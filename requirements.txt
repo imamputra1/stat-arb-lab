@@ -1,7 +1,5 @@
 # First Dependecies
 pyarrow>=15.0.0
-pandas>=2.2.0
-numpy>=1.26.0
 ccxt>=4.2.15
 pydantic>=2.6.0
 python-dotenv>=1.0.0
@@ -15,12 +13,28 @@ yfinance>=0.2.36
 
 # Core Data Engines
 duckdb>=0.9.0
-polars>=0.20.0
 zstandard>=0.22.0
-
-# --- VISUALIZATION (NODE D) ---
 matplotlib>=3.8.0
 seaborn>=0.13.0
 
 # --- UTILS ---
 typing-extensions>=4.8.0
+# --- CORE DATA ENGINE ---
+polars>=1.0.0            # High-performance DataFrame
+pandas>=2.0.0            # Compatibility & Analytics
+numpy>=1.24.0            # Vectorized Math
+
+# --- PERFORMANCE & PARALLELISM ---
+numba>=0.58.0            # JIT Acceleration for Ryzen 5
+joblib>=1.3.0            # Parallel Execution
+scipy>=1.10.0            # Signal Processing & Stats
+
+xxhash>=3.2.0            # Ultra-fast hashing
+dataclasses-json>=0.5.7  # Serialization
+lz4>=4.3.0               # Fast compression
+
+
+# --- INFRASTRUCTURE ---
+psutil>=5.9.0            # Resource Monitoring
+tenacity>=8.2.0          # Resilient Retries
+
