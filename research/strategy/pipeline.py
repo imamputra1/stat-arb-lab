@@ -10,6 +10,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional
 import polars as pl
+import argparse
 
 # --- PATH INJECTION ---
 PROJECT_ROOT = Path(__file__).parent.parent.parent.absolute()
@@ -41,6 +42,11 @@ def setup_advanced_logging() -> logging.Logger:
     fh.setFormatter(formatter)
     logger.addHandler(fh)
     
+    logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)-8s | %(message)s',
+    datefmt='%H:%M:%S'
+    )
     return logger
 
 logger = setup_advanced_logging()
@@ -172,7 +178,6 @@ Focus: Scalable research with CLI parameter injection.
 
 def main():
     """Main execution function with FULL dynamic argument parsing."""
-    import argparse
     
     parser = argparse.ArgumentParser(
         description="Execute Dynamic Kalman Arbitrage Pipeline",

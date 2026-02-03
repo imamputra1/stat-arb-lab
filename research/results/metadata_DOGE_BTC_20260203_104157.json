@@ -1,0 +1,1 @@
+{"target_symbol": "DOGE", "anchor_symbol": "BTC", "entry_threshold": 1.5, "exit_threshold": 0.5, "process_noise": 1e-05}

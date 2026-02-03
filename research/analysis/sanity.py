@@ -58,7 +58,14 @@ class SystemDoctor:
 
     def _check_structure(self):
         """Memastikan folder inti ada."""
-        paths = ["research/strategy/engine", "research/strategy/models/library", "data/silver"]
+        paths = [
+            "research/strategy/engine", 
+            "research/strategy/models/library", 
+            "data/silver",
+            #"research/strategy/optimization",
+            #"research/strategy/signals",
+            #"research/analytics"
+        ]
         missing = [p for p in paths if not (self.project_root / p).exists()]
         
         if missing:
