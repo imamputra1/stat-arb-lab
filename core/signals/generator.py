@@ -1,33 +1,27 @@
 """
-SIGNAL GENERATOR (THE ENGINE) - V13.0 QUANTUM
+SIGNAL GENERATOR (THE ENGINE) - V13.4 STABLE
 Location: core/signals/generator.py
 Focus: Industrial-grade state machine, high-speed batching, and live telemetry.
-Paradigm: Mechanism over Policy, Result-Oriented, Panic-Free Architecture.
-Author: ADHD-Dyslexic Systems Architect (Industrial Strength Refinement)
 """
 
 import polars as pl
 import numpy as np
 from typing import Dict, Any, Optional, List
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum, auto
 from datetime import datetime, timezone
 import logging
 
 # Core Shared & Signal Components Integration
 from core.shared import Result, Ok, Err, PerformanceMonitor
-from .types import SignalSide, SignalAction, SignalEvent
+from .types import SignalSide, SignalAction, SignalEvent, SignalMetadata
 from .base_signal import BaseStrategy, StrategyProtocol
 from .filters import SignalValidator, PositionFilter
-
-# ============================================================================
-# LOGGING & MONITORING
-# ============================================================================
 
 logger = logging.getLogger("Orca.Generator")
 
 # ============================================================================
-# DATA MODELS (Enhanced Metadata)
+# DATA MODELS
 # ============================================================================
 
 class GeneratorState(Enum):
@@ -46,7 +40,6 @@ class GeneratorConfig:
     max_batch_size: int = 1_000_000
     enable_caching: bool = True
     cache_ttl_seconds: int = 300
-    # Cooldown dalam hitungan bar/menit untuk mencegah 'over-trading'.
     cooldown_minutes: int = 5 
 
 @dataclass
@@ -64,18 +57,10 @@ class PositionState:
         self.entry_time = ts
 
 # ============================================================================
-# THE GENERATOR ENGINE (Master Orchestrator)
+# THE GENERATOR ENGINE
 # ============================================================================
 
 class SignalGenerator:
-    """
-    Mesin Orkestrasi Sinyal Tingkat Industri (Mechanism).
-    
-    Responsibilities:
-    1. Mengelola transisi State Machine (Neutral -> Long/Short).
-    2. Menjalankan Policy dari Strategy tanpa mencampuri logikanya.
-    3. Memberikan jaminan performa dan validasi sinyal sebelum eksekusi.
-    """
     
     def __init__(
         self, 
@@ -102,7 +87,6 @@ class SignalGenerator:
     def process_batch(self, df: pl.DataFrame) -> Result[pl.DataFrame, str]:
         """
         Memproses data masif dengan sinkronisasi State Machine.
-        Optimasi: Menggunakan NumPy loop untuk state sekuensial yang tidak bisa divektorisasi murni.
         """
         self._gen_state = GeneratorState.PROCESSING_BATCH
         start_ts = datetime.now(timezone.utc)
@@ -114,16 +98,15 @@ class SignalGenerator:
             
             raw_df = res.unwrap()
             
-            # 2. State Machine Loop (Ryzen 5 Speed Injection)
-            # Kita menggunakan Z-Score sebagai pemicu utama transisi
+            # 2. State Machine Loop (Numpy Optimized)
             z_scores = raw_df["z_score"].to_numpy()
             n = len(z_scores)
             
-            # Get Strategy Policy Thresholds
-            entry = getattr(self.strategy, 'entry_threshold', 2.0)
-            exit_val = getattr(self.strategy, 'exit_threshold', 0.5)
+            # Get Strategy Policy Thresholds (Fallback mechanism)
+            # Menggunakan getattr berantai untuk kompatibilitas properti vs config object
+            entry = getattr(self.strategy, 'entry_threshold', getattr(self.strategy.cfg, 'entry', 2.0))
+            exit_val = getattr(self.strategy, 'exit_threshold', getattr(self.strategy.cfg, 'exit', 0.5))
             
-            # Buffers
             positions = np.zeros(n, dtype=np.int8)
             actions = np.zeros(n, dtype=np.int8)
             
@@ -160,7 +143,6 @@ class SignalGenerator:
                 pl.Series("action", actions).cast(pl.Int8)
             ])
             
-            # 4. Telemetry Update
             duration = (datetime.now(timezone.utc) - start_ts).total_seconds() * 1000
             logger.info(f"Batch completed: {n} rows in {duration:.2f}ms")
             
@@ -188,7 +170,6 @@ class SignalGenerator:
         proposed = res.unwrap()
         
         # 2. Logic Machine (Mechanism)
-        # Pastikan tidak ada double-open atau transisi ilegal
         actual_action = SignalAction.HOLD
         
         if self._pos_state.side == SignalSide.NEUTRAL:
@@ -201,16 +182,30 @@ class SignalGenerator:
                 self._pos_state.side = SignalSide.NEUTRAL
                 actual_action = SignalAction.CLOSE
         
-        # 3. Construct Industrial SignalEvent
+        # 3. Metadata Handling (Immutable Update)
+        # Ambil metadata dari strategi atau buat baru jika None
+        base_meta = proposed.metadata or SignalMetadata(
+            strategy_name=self.strategy.name,
+            strategy_version=self.strategy.version
+        )
+        
+        # Buat salinan dict extra dan update
+        new_extra = base_meta.extra.copy() if base_meta.extra else {}
+        new_extra.update({
+            "engine_ver": "v13.0",
+            "is_live": True
+        })
+        
+        # Gunakan replace() untuk membuat objek SignalMetadata baru
+        final_meta = replace(base_meta, extra=new_extra)
+
+        # 4. Construct Signal Event
         event = SignalEvent(
             timestamp=proposed.timestamp,
             side=self._pos_state.side,
             action=actual_action,
             strength=proposed.strength,
-            metadata=proposed.metadata.update(
-                engine_ver="v13.0",
-                is_live=True
-            )
+            metadata=final_meta
         )
         
         self._gen_state = GeneratorState.IDLE
@@ -236,7 +231,7 @@ class GeneratorFactory:
 
 def create_signal_generator(name: str, params: Dict[str, Any]) -> SignalGenerator:
     """Entry point utama dengan fallback ke KalmanMR."""
-    from .factory import get_signal_strategy #
+    from .factory import get_signal_strategy 
     strategy = get_signal_strategy(name, params)
     
     res = GeneratorFactory.create(strategy)

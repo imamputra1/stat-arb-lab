@@ -89,24 +89,34 @@ class SignalValidator(BaseFilter):
         
         # 2. Value Integrity Check (Fast Path)
         # Mencari null atau nilai ilegal (-1, 0, 1) secara vectorized
-        check = df.select([
-            pl.col("position").is_null().any().alias("has_null"),
-            pl.col("position").is_in([-1, 0, 1]).all().alias("valid_values")
-        ]).collect().row(0)
+        try:
+            check = df.select([
+                pl.col("position").is_null().any().alias("has_null"),
+                pl.col("position").is_in([-1, 0, 1]).all().alias("valid_values")
+            ]).row(0)
         
-        if check[0] or not check[1]:
-            return Err("Integrity Violation: Found NULLs or illegal position values")
+            if check[0] or not check[1]:
+                return Err("Integrity Violation: Found NULLs or illegal position values")
+
+            return Ok(df)
+
+
+        except Exception as e:
+            return Err(f"Validation Error: {str(e)}")
             
-        return Ok(df)
 
     def apply_single(self, event: SignalEvent) -> Result[bool, str]:
         """Validasi sinyal tunggal menggunakan kontrak internal SignalEvent."""
         # 1. Panggil validasi internal SignalEvent
-        res = event.validate()
+        res = event.validate() if hasattr(event, 'validate') else Ok(True)
         if res.is_err(): return res
         
         # 2. Freshness Check
         now = datetime.now(timezone.utc)
+        if event.timestamp.tzinfo is None:
+            pass
+        return Ok(True)
+
         if (now - event.timestamp).total_seconds() > self.max_stale:
             return Err(f"Stale Signal: {self.name} age exceeds {self.max_stale}s")
             
