@@ -1,6 +1,6 @@
 # PROJECT ORCA MASTER CONFIGURATION
 project_name: "ORCA_QUANT_LAB"
-version: "9.0"
+version: "0.1.2"
 
 paths:
   # Ubah path ini sesuai struktur di laptop Anda (gunakan path absolut)

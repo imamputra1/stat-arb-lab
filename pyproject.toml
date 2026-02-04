@@ -1,0 +1,50 @@
+[project]
+name = "orca-quant-lab"
+version = "0.1.2"
+description = "Industrial-grade Statistical Arbitrage System with Kalman-Crossover Logic"
+authors = [
+    {name = "ArchMaster", email = "arch@orca.internal"}
+]
+dependencies = [
+    "polars>=1.0.0",        # High-performance Data Engine
+    "numpy>=1.24.0",        # Vectorized Math
+    "pandas>=2.0.0",        # Legacy Data Compatibility
+    "scipy>=1.10.0",        # Optimization Tools
+    "pydantic>=2.0.0",      # Structural Type Discipline
+    "dataclasses-json>=0.6.0", # JSON Serialization for Shotgun
+    "pyyaml>=6.0.0",        # Config Management
+    "matplotlib>=3.7.0",    # Static Visualization
+    "seaborn>=0.12.0",      # Statistical Plots
+    "psutil>=5.9.0",        # Resource Monitoring (Ryzen Guard)
+    "xxhash>=3.0.0",        # Fast Data Integrity
+    "zstandard>=0.21.0",    # High-ratio Compression
+]
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "hypothesis>=6.80.0",    # Property-based Testing
+    "pytest-mock>=3.11.0",
+]
+dev = [
+    "black>=23.0.0",        # Code Formatting
+    "isort>=5.12.0",        # Import Sorting
+    "mypy>=1.5.0",          # Static Type Checking
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "slow: marks tests as slow",
+    "integration: marks tests as integration tests",
+    "node_h: tests for Harvest (Ingestion)",
+    "node_b: tests for Processing (Engine)",
+    "node_s: tests for Signals (Brain)"
+]
