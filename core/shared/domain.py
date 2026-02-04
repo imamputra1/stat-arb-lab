@@ -1,11 +1,34 @@
-"""
-DOMAIN MODULE - Type Disciplined, ADHD Optimized
-Pure value objects with structural composition patterns
-"""
-from typing import Optional, Protocol, runtime_checkable, Any, List, Tuple
+"""Pure value objects with structural composition patterns"""
+from typing import Optional, Protocol, runtime_checkable, Any, List, Tuple, Generic, TypeVar, Callable, Awaitable
 from dataclasses import dataclass
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator, ValidationInfo
+from enum import Enum, auto
+from .result import Result
+
+
+T = TypeVar('T')
+
+# ====================== CORE EXECUTION TYPES ======================
+
+class Status(Enum):
+    """
+    Status eksekusi atomik untuk seluruh komponen ORCA.
+    Digunakan untuk melacak lifecycle di Factory dan Generator.
+    """
+    SUCCESS = auto()
+    FAILURE = auto()
+    PENDING = auto()
+    RUNNING = auto()
+    IDLE = auto()
+
+class AsyncResult(Generic[T]):
+    """
+    Wrapper untuk operasi asinkron yang mengembalikan monad Result.
+    Memungkinkan pola pemrograman fungsional pada alur asinkron.
+    """
+    def __init__(self, operation: Callable[..., Awaitable[Result[T, Any]]]):
+        self._operation = operation
 
 # ====================== STRUCTURAL PROTOCOLS ======================
 @runtime_checkable

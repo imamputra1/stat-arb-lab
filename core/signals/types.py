@@ -1,31 +1,17 @@
 """
-SIGNAL TYPES & DATA MODELS
+SIGNAL TYPES & DATA MODELS - V10.0 QUANTUM
 Location: core/signals/types.py
-Focus: Universal vocabulary for trading decisions - Industrial Grade
-Paradigm: Structured Composition, Result-Oriented, Type-Safe
+Focus: Defining atomic signal types and state transition rules.
+Paradigm: Type-Safe, Immutable, Performance Optimized.
 """
 
 from enum import IntEnum, auto
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, Tuple, Protocol, runtime_checkable, ClassVar
-from datetime import datetime, timezone
-
-# Integrasi dengan Core Shared Result Pattern
-from core.shared import Result, Ok, Err
+from typing import Dict, Any, Optional, Tuple
+from datetime import datetime
 
 # ============================================================================
-# PROTOCOLS (Behavioral Contracts)
-# ============================================================================
-
-@runtime_checkable
-class SignalValidatable(Protocol):
-    """Kontrak struktural untuk validasi sinyal secara internal."""
-    def validate(self) -> Result[bool, str]:
-        """Memastikan integritas data sinyal."""
-        ...
-
-# ============================================================================
-# ENUMERATIONS (Domain Constants)
+# ENUMERATIONS (The Logic States)
 # ============================================================================
 
 class SignalSide(IntEnum):
@@ -41,16 +27,11 @@ class SignalSide(IntEnum):
     def is_directional(self) -> bool:
         """Check jika memiliki arah (bukan netral)."""
         return self.value != 0
-    
-    @property
-    def multiplier(self) -> int:
-        """Gunakan untuk kalkulasi: 1 untuk Long, -1 untuk Short, 0 untuk Neutral."""
-        return int(self.value)
-    
+
     def opposite(self) -> 'SignalSide':
-        """Inversi arah (LONG ↔ SHORT)."""
+        """Inversi arah untuk manajemen hedging atau pembalikan posisi."""
         return SignalSide(-self.value) if self.is_directional else self
-    
+
     def __str__(self) -> str:
         return self.name
 
@@ -58,166 +39,99 @@ class SignalAction(IntEnum):
     """Aksi eksekusi dengan state transition matrix."""
     OPEN = auto()   # Memulai posisi baru
     CLOSE = auto()  # Menutup posisi yang ada
-    HOLD = auto()   # Mempertahankan state saat ini
-    
-    # Matriks Kompatibilitas Aksi terhadap Sisi
-    COMPATIBLE_SIDES: ClassVar[Dict['SignalAction', Tuple[SignalSide, ...]]] = {
-        OPEN: (SignalSide.LONG, SignalSide.SHORT),
-        CLOSE: (SignalSide.LONG, SignalSide.SHORT, SignalSide.NEUTRAL),
-        HOLD: (SignalSide.LONG, SignalSide.SHORT, SignalSide.NEUTRAL)
-    }
-    
+    HOLD = auto()   # Mempertahankan state saat ini (No-op)
+
     @property
     def requires_active_position(self) -> bool:
         """Aksi yang membutuhkan posisi terbuka sebelumnya."""
-        return self in (CLOSE, HOLD)
+        return self in (SignalAction.CLOSE, SignalAction.HOLD)
 
 # ============================================================================
-# VALUE OBJECTS (Immutable Data Carriers)
+# COMPATIBILITY MAPPINGS (Externalized to avoid Enum casting errors)
 # ============================================================================
 
-@dataclass(frozen=True, order=True)
+# Matriks Kompatibilitas Aksi terhadap Sisi
+ACTION_SIDE_COMPATIBILITY: Dict[SignalAction, Tuple[SignalSide, ...]] = {
+    SignalAction.OPEN: (SignalSide.LONG, SignalSide.SHORT),
+    SignalAction.CLOSE: (SignalSide.LONG, SignalSide.SHORT, SignalSide.NEUTRAL),
+    SignalAction.HOLD: (SignalSide.LONG, SignalSide.SHORT, SignalSide.NEUTRAL)
+}
+
+# ============================================================================
+# DATA MODELS (The Value Objects)
+# ============================================================================
+
+@dataclass(frozen=True)
 class SignalStrength:
-    """
-    Objek Nilai Conviction Sinyal (Normalized [-1.0, 1.0]).
-    Mengenkapsulasi logika normalisasi dan thresholding.
-    """
+    """Representasi kekuatan sinyal (0.0 hingga 1.0)."""
     value: float = 0.0
-    MIN: ClassVar[float] = -1.0
-    MAX: ClassVar[float] = 1.0
-    
-    def __post_init__(self) -> None:
-        if not isinstance(self.value, (int, float)):
-            raise TypeError(f"Strength harus numerik, got {type(self.value)}")
-        
-        # Clamping otomatis pada inisialisasi
-        clamped = max(self.MIN, min(self.MAX, float(self.value)))
-        object.__setattr__(self, 'value', round(clamped, 4))
-    
-    @property
-    def absolute(self) -> float:
-        """Magnitudo tanpa arah (0.0 ke 1.0)."""
-        return abs(self.value)
-    
-    def is_above(self, threshold: float) -> bool:
-        """Evaluasi kekuatan terhadap ambang batas tertentu."""
-        return self.absolute >= threshold
+
+    def __post_init__(self):
+        """Menjamin nilai kekuatan selalu dalam batas operasional."""
+        # Clamp value antara 0.0 dan 1.0
+        object.__setattr__(self, 'value', max(0.0, min(1.0, float(self.value))))
+
+    def __repr__(self) -> str:
+        return f"{self.value * 100:.1f}%"
 
 @dataclass(frozen=True)
 class SignalMetadata:
-    """Kontainer Metadata Imutabel dengan Type-Safe Access."""
-    _data: Dict[str, Any] = field(default_factory=dict)
-    
-    def get(self, key: str, default: Any = None) -> Any:
-        return self._data.get(key, default)
-    
-    def get_typed(self, key: str, expected_type: type, default: Any = None) -> Any:
-        value = self.get(key, default)
-        if value is not None and not isinstance(value, expected_type):
-            raise TypeError(f"Key '{key}' mengharapkan {expected_type}, got {type(value)}")
-        return value
-    
-    def update(self, **updates: Any) -> 'SignalMetadata':
-        """Immutable pattern: mengembalikan instance baru dengan data terupdate."""
-        return SignalMetadata({**self._data, **updates})
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return self._data.copy()
-
-# ============================================================================
-# MAIN SIGNAL EVENT (The Core Decision Unit)
-# ============================================================================
+    """Kontainer informasi tambahan untuk audit trail."""
+    strategy_name: str
+    strategy_version: str
+    reason: Optional[str] = None
+    extra: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass(frozen=True)
-class SignalEvent(SignalValidatable):
+class SignalEvent:
     """
-    Kapsul Sinyal ORCA - Keputusan Strategi Murni.
-    Menerapkan validasi ketat dan interoperabilitas sistem.
+    Atomic Signal Event - Objek tunggal yang dibawa melintasi pipeline.
     """
-    timestamp: datetime
     side: SignalSide
     action: SignalAction
     strength: SignalStrength = field(default_factory=SignalStrength)
-    metadata: SignalMetadata = field(default_factory=SignalMetadata)
-    
-    def __post_init__(self) -> None:
-        # Fail Fast: Validasi Zona Waktu
-        if self.timestamp.tzinfo is None:
-            raise ValueError("SignalEvent WAJIB menggunakan timezone-aware datetime (UTC).")
-        
-        # Fail Fast: Kompatibilitas Aksi
-        if self.side not in SignalAction.COMPATIBLE_SIDES[self.action]:
-            raise ValueError(f"Aksi {self.action.name} tidak kompatibel dengan Sisi {self.side.name}")
-
-    def validate(self) -> Result[bool, str]:
-        """Validasi formal mengembalikan monad Result."""
-        try:
-            self.__post_init__()
-            return Ok(True)
-        except Exception as e:
-            return Err(str(e))
-
-    @property
-    def is_valid(self) -> bool:
-        return self.validate().is_ok()
-
-    # --- Domain Logic Helpers ---
-    
-    def is_entry(self) -> bool:
-        return self.action == SignalAction.OPEN and self.side.is_directional
-    
-    def is_exit(self) -> bool:
-        return self.action == SignalAction.CLOSE
-        
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialisasi untuk penyimpanan/log."""
-        return {
-            'timestamp': self.timestamp.isoformat(),
-            'side': self.side.name,
-            'side_value': self.side.value,
-            'action': self.action.name,
-            'strength': self.strength.value,
-            'metadata': self.metadata.to_dict()
-        }
+    timestamp: datetime = field(default_factory=datetime.now)
+    metadata: Optional[SignalMetadata] = None
 
 # ============================================================================
-# FACTORY FUNCTIONS (The Safe Entry Points)
+# FACTORY FUNCTIONS (The Interface Gates)
 # ============================================================================
-
-def create_neutral_signal(ts: Optional[datetime] = None) -> SignalEvent:
-    """Membuat sinyal netral standar."""
-    return SignalEvent(
-        timestamp=ts or datetime.now(timezone.utc),
-        side=SignalSide.NEUTRAL,
-        action=SignalAction.HOLD,
-        metadata=SignalMetadata({'type': 'system_neutral'})
-    )
 
 def create_directional_signal(
     side: SignalSide, 
     strength: float, 
-    ts: Optional[datetime] = None,
-    **meta: Any
+    ts: datetime,
+    strategy: str = "unknown",
+    version: str = "0.0.0"
 ) -> SignalEvent:
-    """Membuat sinyal pembukaan posisi (Long/Short)."""
+    """Helper untuk membuat sinyal Entry (LONG/SHORT)."""
     return SignalEvent(
-        timestamp=ts or datetime.now(timezone.utc),
         side=side,
         action=SignalAction.OPEN,
         strength=SignalStrength(strength),
-        metadata=SignalMetadata({'type': 'strategy_signal', **meta})
+        timestamp=ts,
+        metadata=SignalMetadata(strategy_name=strategy, strategy_version=version)
     )
 
 def create_exit_signal(
     side: SignalSide, 
-    ts: Optional[datetime] = None,
-    reason: str = "target_reached"
+    ts: datetime,
+    reason: str = "Target reached"
 ) -> SignalEvent:
-    """Membuat sinyal penutupan posisi."""
+    """Helper untuk membuat sinyal Exit (CLOSE)."""
     return SignalEvent(
-        timestamp=ts or datetime.now(timezone.utc),
         side=side,
         action=SignalAction.CLOSE,
-        strength=SignalStrength(1.0), # Exit biasanya memiliki conviction penuh
-        metadata=SignalMetadata({'type': 'exit_signal', 'reason': reason})
+        strength=SignalStrength(0.0),
+        timestamp=ts,
+        metadata=SignalMetadata(strategy_name="system", strategy_version="1.0", reason=reason)
+    )
+
+def create_neutral_signal(ts: datetime) -> SignalEvent:
+    """Helper untuk membuat sinyal HOLD (No action)."""
+    return SignalEvent(
+        side=SignalSide.NEUTRAL,
+        action=SignalAction.HOLD,
+        strength=SignalStrength(0.0),
+        timestamp=ts
     )

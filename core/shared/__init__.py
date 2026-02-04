@@ -17,8 +17,12 @@ from .domain import (
     validate_ohlcv_batch,
 
     is_valid_ohlcv, 
-    is_valid_fetch_job
+    is_valid_fetch_job,
+
+    Status,
+    AsyncResult
 )
+from .performance import PerformanceMonitor
 
 __all__ = [
     "Result", 
@@ -38,4 +42,11 @@ __all__ = [
     "validate_ohlcv_batch", 
     "is_valid_ohlcv", 
     "is_valid_fetch_job",
+
+    #New
+    "Status",
+    "AsyncResult",
+    "PerformanceMonitor"
+
 ]
+
