@@ -9,10 +9,10 @@ from typing import List, Any, Optional
 # Type-safe imports
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from ...shared import Result
+    from core.shared import Result
 
 # Shared Imports
-from ...shared import Ok, Err
+from core.shared import Ok, Err
 
 logger = logging.getLogger("LogReturnsTransformer")
 

@@ -9,7 +9,7 @@ from typing import Dict, Any, List, Union
 import polars as pl
 
 # Path correction: 3 dots to reach research/shared/
-from ...shared import Result, Ok, Err
+from core.shared import Result, Ok, Err
 
 class StrategyModel(ABC):
     """

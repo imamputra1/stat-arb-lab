@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent.absolute()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from research.shared import Ok, Err, Result
+from core.shared import Ok, Err, Result
 
 # --- LOGGING SETUP ---
 def setup_logging():

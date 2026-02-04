@@ -18,7 +18,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.absolute()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from research.shared import Result, Ok, Err
+from core.shared import Result, Ok, Err
 
 class SpaceStrategy(Enum):
     SURGICAL = auto()
@@ -106,3 +106,20 @@ def get_parameter_space(name: str) -> Result[QuantumParameterSpace, str]:
     if name == "shotgun": return Ok(QuantumParameterSpace.dirty_shotgun())
     if name == "kamikaze": return Ok(QuantumParameterSpace.kamikaze_mode())
     return Err(f"Space not found: {name}")
+
+
+# --- LEGACY COMPATIBILITY ADAPTER (The Bridge) ---
+class ParameterSpace:
+    """
+    Compatibility layer for legacy modules expecting 'ParameterSpace'.
+    Redirects calls to the new QuantumParameterSpace engine.
+    """
+    @staticmethod
+    def surgical_grid():
+        for res in QuantumParameterSpace.surgical_grid().generate():
+            if res.is_ok(): yield res.unwrap().params
+
+    @staticmethod
+    def dirty_shotgun():
+        for res in QuantumParameterSpace.dirty_shotgun().generate():
+            if res.is_ok(): yield res.unwrap().params

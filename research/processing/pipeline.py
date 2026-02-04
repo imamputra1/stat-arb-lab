@@ -7,17 +7,13 @@ Paradigm: Facade Pattern
 import logging
 import polars as pl
 from typing import Any, List
-
-# Relative imports from current package
 from .transformation.returns import create_log_returns_transformer
 from .features.market_micro import create_microstructure_transformer
 from .features.stat_arb import create_stat_arb_transformer
 from .storage.metadata_registry import create_metadata_registry
 from .storage.parquet_engine import create_parquet_engine
-
-from ..shared import Err, Result
-
-logger = logging.getLogger("ProcessingPipeline")
+from core.shared import Err, Result
+logger = logging.getLogger('ProcessingPipeline')
 
 class NodeBPipeline:
     """
@@ -28,14 +24,7 @@ class NodeBPipeline:
     1. Returns (Tier 1) -> 2. Microstructure (Tier 2) -> 3. StatArb (Tier 3) -> 4. Storage
     """
 
-    def __init__(
-        self, 
-        silver_path: str,
-        anchor_symbol: str = "BTC",
-        windows: List[str] = ["1h", "4h", "24h"],
-        beta_window: str = "1w",
-        zscore_window: str = "24h"
-    ):
+    def __init__(self, silver_path: str, anchor_symbol: str='BTC', windows: List[str]=['1h', '4h', '24h'], beta_window: str='1w', zscore_window: str='24h'):
         """
         Args:
             silver_path: Target directory for Silver Lake.
@@ -46,81 +35,43 @@ class NodeBPipeline:
         """
         self.silver_path = silver_path
         self.anchor_symbol = anchor_symbol
-        
-        # 1. Initialize Storage District
         self.registry = create_metadata_registry(silver_path)
         self.storage = create_parquet_engine(silver_path, self.registry)
-        
-        # 2. Immutable Feature Configuration (For Hashing)
-        self.config = {
-            "anchor_symbol": anchor_symbol,
-            "windows": windows,
-            "beta_window": beta_window,
-            "zscore_window": zscore_window,
-            "pipeline_version": "1.0.0"
-        }
+        self.config = {'anchor_symbol': anchor_symbol, 'windows': windows, 'beta_window': beta_window, 'zscore_window': zscore_window, 'pipeline_version': '1.0.0'}
 
     def run_batch(self, raw_data: Any) -> Result[str, str]:
         """
         Executes the full transformation sequence with strict error tracking.
         """
         try:
-            # KOTOR bin SUPERIOR: Auto-lazy conversion
-            # Ensures we always operate in lazy mode regardless of input type.
             data = raw_data.lazy() if isinstance(raw_data, pl.DataFrame) else raw_data
-            
-            logger.info(f"Initiating batch processing for anchor: {self.anchor_symbol}")
-
-            # --- TIER 1: Log Returns & Standardization ---
+            logger.info(f'Initiating batch processing for anchor: {self.anchor_symbol}')
             t1 = create_log_returns_transformer()
             res_t1 = t1.transform(data)
             if res_t1.is_err():
-                return Err(f"T1 Failed: {res_t1.error}")
+                return Err(f'T1 Failed: {res_t1.error}')
             lf_t1 = res_t1.unwrap()
-
-            # --- TIER 2: Market Risk Sensors (Volatility & Correlation) ---
-            t2 = create_microstructure_transformer(
-                windows=self.config["windows"], 
-                anchor_symbol=self.anchor_symbol
-            )
+            t2 = create_microstructure_transformer(windows=self.config['windows'], anchor_symbol=self.anchor_symbol)
             res_t2 = t2.transform(lf_t1)
             if res_t2.is_err():
-                return Err(f"T2 Failed: {res_t2.error}")
+                return Err(f'T2 Failed: {res_t2.error}')
             lf_t2 = res_t2.unwrap()
-
-            # --- TIER 3: Stationarity Engine (Beta, Spread, Z-Score) ---
-            t3 = create_stat_arb_transformer(
-                beta_window=self.config["beta_window"],
-                zscore_window=self.config["zscore_window"],
-                anchor_symbol=self.anchor_symbol
-            )
+            t3 = create_stat_arb_transformer(beta_window=self.config['beta_window'], zscore_window=self.config['zscore_window'], anchor_symbol=self.anchor_symbol)
             res_t3 = t3.transform(lf_t2)
             if res_t3.is_err():
-                return Err(f"T3 Failed: {res_t3.error}")
+                return Err(f'T3 Failed: {res_t3.error}')
             final_lf = res_t3.unwrap()
-
-            # --- STORAGE: The Vault ---
-            logger.info("Refinement complete. Streaming to Silver Lake...")
+            logger.info('Refinement complete. Streaming to Silver Lake...')
             save_res = self.storage.save(final_lf, feature_params=self.config)
-            
             if save_res.is_err():
-                return Err(f"Storage Failed: {save_res.error}")
-                
-            logger.info("Batch processing sequence finalized successfully")
+                return Err(f'Storage Failed: {save_res.error}')
+            logger.info('Batch processing sequence finalized successfully')
             return save_res
-
         except Exception as e:
-            logger.error(f"Pipeline Execution Crash: {str(e)}", exc_info=True)
-            return Err(f"Pipeline Fatal Error: {str(e)}")
+            logger.error(f'Pipeline Execution Crash: {str(e)}', exc_info=True)
+            return Err(f'Pipeline Fatal Error: {str(e)}')
 
-# ====================== FACTORY ======================
-
-def create_processing_pipeline(
-    silver_path: str,
-    **kwargs: Any
-) -> NodeBPipeline:
+def create_processing_pipeline(silver_path: str, **kwargs: Any) -> NodeBPipeline:
     """Factory function for NodeBPipeline."""
     return NodeBPipeline(silver_path=silver_path, **kwargs)
-
-# ====================== EXPORTS ======================
-__all__ = ["NodeBPipeline", "create_processing_pipeline"]
+__all__ = ['NodeBPipeline', 'create_processing_pipeline']

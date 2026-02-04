@@ -80,7 +80,7 @@ def check_protocols(logger) -> bool:
 def check_result_pattern(logger) -> bool:
     """Check Shared Result Pattern integration."""
     try:
-        from research.shared import Ok, match_result
+        from core.shared import Ok, match_result
         logger.info("Shared Result Pattern import: PASSED")
         
         ok_res = Ok("test")

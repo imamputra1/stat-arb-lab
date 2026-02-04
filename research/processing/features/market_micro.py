@@ -7,7 +7,7 @@ Paradigm: Row-based rolling for maximum stability in Polars 1.x
 import logging
 import polars as pl
 from typing import Any
-from ...shared import Ok, Err
+from core.shared import Ok, Err
 
 logger = logging.getLogger("MicrostructureTransformer")
 

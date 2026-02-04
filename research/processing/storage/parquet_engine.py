@@ -12,10 +12,10 @@ from typing import Dict, Any
 # Type-safe imports
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from ...shared import Result
+    from core.shared import Result
     from .metadata_registry import MetadataRegistry
 
-from ...shared import Ok, Err
+from core.shared import Ok, Err
 
 logger = logging.getLogger("ParquetEngine")
 

@@ -10,9 +10,9 @@ from typing import Dict, List, Any
 import numpy as np
 from datetime import datetime, timedelta
 
-from research.shared import Ok, Err, Result
-from research.strategy.data.loader import SilverDataLoader
-from research.strategy.models.base import StrategyModel
+from core.shared import Ok, Err, Result
+from research.ingestion.loader import SilverDataLoader
+from core.math.base import StrategyModel
 
 logger = logging.getLogger("HybridEngine")
 

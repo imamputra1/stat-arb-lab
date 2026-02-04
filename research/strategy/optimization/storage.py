@@ -43,7 +43,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.absolute()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from research.shared import Result, Ok, Err
+from core.shared import Result, Ok, Err
 
 # --- INDUSTRIAL TELEMETRY LOGGING ---
 logging.basicConfig(

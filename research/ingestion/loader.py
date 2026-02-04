@@ -12,7 +12,7 @@ import polars as pl
 from functools import lru_cache
 
 # Path correction: 3 dots for research/shared/ from research/strategy/data/
-from ...shared import Ok, Err, Result
+from core.shared import Ok, Err, Result
 
 logger = logging.getLogger("SilverDataLoader")
 

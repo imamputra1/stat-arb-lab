@@ -3,7 +3,7 @@ import logging
 from datetime import datetime
 
 # Import komponen inti
-from research.shared import FetchJob, Ok, Err
+from core.shared import FetchJob, Ok, Err
 from research.ingestion import (
     CCXTAsyncAdaptor, 
     ParquetStorageAdaptor, 

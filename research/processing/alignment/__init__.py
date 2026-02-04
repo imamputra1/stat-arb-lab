@@ -30,7 +30,7 @@ from .strategies import (
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..protocols import TimeSeriesAligner
-    from ...shared import Result
+    from core.shared import Result
     import polars as pl
     
     # Re-export type aliases from protocols for convenience
@@ -108,5 +108,5 @@ USAGE EXAMPLES:
 
 PROTOCOL COMPLIANCE:
 All aligners implement the TimeSeriesAligner protocol from research.processing.protocols.
-All functions return Result[T, str] from research.shared for error handling.
+All functions return Result[T, str] from core.shared for error handling.
 """

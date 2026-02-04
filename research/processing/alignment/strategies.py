@@ -2,7 +2,7 @@ import polars as pl
 from typing import Dict, List, Any
 import logging
 
-from ...shared import Result, Ok, Err
+from core.shared import Result, Ok, Err
 logger = logging.getLogger("AlignmentStrategy")
 
 class HybridAsofAligner:

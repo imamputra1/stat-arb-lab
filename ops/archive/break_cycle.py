@@ -1,8 +1,18 @@
 """
+CYCLE BREAKER (CIRCULAR IMPORT FIX)
+Location: ~/orca/break_cycle.py
+Focus: Moves 'QuantumScoreKeeper' import inside the method to prevent import deadlocks.
+"""
+from pathlib import Path
+
+TARGET_FILE = Path("research/strategy/pipeline.py")
+
+# Konten Pipeline V9.3 (Fixed Circular Import)
+FIXED_CONTENT = """\"\"\"
 QUANTUM STRATEGY PIPELINE (THE BLIND COMMANDER) - V9.3 CYCLE FIX
 Location: research/strategy/pipeline.py
 Focus: Pure orchestration. Optimized to prevent circular imports with Optimization Node.
-"""
+\"\"\"
 
 import sys
 import logging
@@ -286,7 +296,7 @@ class QuantumStrategyOrchestrator:
 
 # --- COMPATIBILITY ADAPTER ---
 class AdvancedStrategyPipeline(QuantumStrategyOrchestrator):
-    """Adapter for HyperParallelEngine (shotgun.py)."""
+    \"\"\"Adapter for HyperParallelEngine (shotgun.py).\"\"\"
     def __init__(self, **kwargs):
         config = PipelineConfig(
             execution_id=f"EXEC_{datetime.now().strftime('%H%M%S')}",
@@ -321,3 +331,13 @@ def create_quantum_pipeline(**kwargs) -> Result[QuantumStrategyOrchestrator, str
         return Ok(pipeline)
     except Exception as e:
         return Err(str(e))
+"""
+
+def apply_fix():
+    print(f"🔧 Applying Circular Import Fix to {TARGET_FILE}...")
+    with open(TARGET_FILE, "w", encoding="utf-8") as f:
+        f.write(FIXED_CONTENT.strip())
+    print("✅ CYCLE BROKEN. PIPELINE STABILIZED.")
+
+if __name__ == "__main__":
+    apply_fix()

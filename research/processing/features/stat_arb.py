@@ -10,9 +10,9 @@ from typing import List, Any
 # Type-safe imports
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from ...shared import Result
+    from core.shared import Result
 
-from ...shared import Ok, Err
+from core.shared import Ok, Err
 
 logger = logging.getLogger("StatArbTransformer")
 
@@ -149,7 +149,7 @@ from typing import List, Any
 # Type-safe imports
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from ...shared import Result
+    from core.shared import Result
 
 
 logger = logging.getLogger("StatArbTransformer")

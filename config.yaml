@@ -1,0 +1,24 @@
+# PROJECT ORCA MASTER CONFIGURATION
+project_name: "ORCA_QUANT_LAB"
+version: "9.0"
+
+paths:
+  # Ubah path ini sesuai struktur di laptop Anda (gunakan path absolut)
+  root: "/home/bumip/orca"
+  silver_lake: "/home/bumip/orca/storage/silver_lake"
+  results: "/home/bumip/orca/storage/quantum_vault"
+  logs: "/home/bumip/orca/storage/logs"
+
+strategy:
+  default:
+    target: "DOGE"
+    anchor: "BTC"
+    warmup_days: 30
+    
+optimization:
+  ryzen_threads: 12
+  default_batch_size: 500
+
+live:
+  paper_mode: true
+  exchange: "binance"

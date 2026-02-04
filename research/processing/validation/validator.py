@@ -6,10 +6,10 @@ import polars as pl
 # Type-safe imports
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from ...shared import Result
+    from core.shared import Result
 
 # Import Shared
-from ...shared import Ok, Err
+from core.shared import Ok, Err
 # Import Rules Definition
 from .rules import ValidationRules
 

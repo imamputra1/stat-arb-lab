@@ -97,14 +97,12 @@ class FetchJob:
     
     def __post_init__(self):
         """Fast validation at construction time"""
-        # ADHD-friendly: Fail fast, fail loudly
         if self.start_date > datetime.now():
             raise ValueError("Start date cannot be in the future")
         
         if self.end_date and self.start_date > self.end_date:
             raise ValueError("Start date must be before end date")
         
-        # Validate timeframe format (quick regex equivalent)
         if not any(self.timeframe.endswith(unit) for unit in ['m', 'h', 'd', 'w']):
             raise ValueError(f"Invalid timeframe: {self.timeframe}")
     
@@ -144,51 +142,28 @@ def create_ohlcv_bulk(
     closes: List[float],
     volumes: List[float]
 ) -> List[OHLCV]:
-    """
-    Batch creation of OHLCV objects - optimized for ADHD (no loops in user code)
-    Uses composition: List[T] -> List[OHLCV] without mutation
-    """
+    """Batch creation of OHLCV objects"""
     if not all(len(lst) == len(timestamps) for lst in [opens, highs, lows, closes, volumes]):
         raise ValueError("All input lists must have same length")
     
     return [
-        OHLCV(
-            timestamp=ts,
-            open=o,
-            high=h,
-            low=l,
-            close=c,
-            volume=v
-        )
+        OHLCV(timestamp=ts, open=o, high=h, low=l, close=c, volume=v)
         for ts, o, h, l, c, v in zip(timestamps, opens, highs, lows, closes, volumes)
     ]
 
 def validate_ohlcv_batch(data: List[OHLCV]) -> Tuple[List[OHLCV], List[str]]:
-    """
-    Fast batch validation using composition pattern
-    Returns: (valid_items, error_messages)
-    """
     valid = []
     errors = []
-    
     for item in data:
         try:
-            # Trigger validation by accessing a property
             if item.validate_price_consistency():
                 valid.append(item)
         except Exception as e:
             errors.append(f"Validation failed: {e}")
-    
     return valid, errors
 
-# ====================== TYPE GUARDS (Structural Checking) ======================
-
 def is_valid_ohlcv(obj: Any) -> bool:
-    """Runtime structural type checking"""
-    # Menggunakan Any (huruf besar) dari typing
     return isinstance(obj, OHLCVContract) and obj.validate_price_consistency()
 
 def is_valid_fetch_job(obj: Any) -> bool:
-    """Runtime structural type checking"""
-    # Menggunakan Any (huruf besar) dari typing
     return isinstance(obj, FetchJobContract) and obj.is_valid()
