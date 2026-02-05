@@ -1,137 +1,221 @@
 """
-SIGNAL TYPES & DATA MODELS - V10.0 QUANTUM
-Location: core/signals/types.py
-Focus: Defining atomic signal types and state transition rules.
-Paradigm: Type-Safe, Immutable, Performance Optimized.
+Signal Types and Events - Protocol definitions for ORCA trading system
 """
 
-from enum import IntEnum, auto
+from enum import Enum, IntEnum
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, Tuple
-from datetime import datetime
+from typing import Dict, Any, List
+import pandas as pd
 
-# ============================================================================
-# ENUMERATIONS (The Logic States)
-# ============================================================================
+from ..shared.result import Result, Ok, Err
 
-class SignalSide(IntEnum):
+# ========== SIGNAL ENUMS ==========
+
+class SignalType(IntEnum):
     """
-    Arah posisi trading dengan properti aritmatika.
-    Memungkinkan perhitungan PnL langsung: side * price_diff.
+    Trading signal types with integer values for efficient storage.
     """
-    LONG = 1
-    SHORT = -1
-    NEUTRAL = 0
+    NEUTRAL = 0      # No action
+    BUY = 1          # Long position
+    SELL = 2         # Short position
+    EXIT = 3         # Exit current position
+    STOP = 4         # Emergency stop
     
-    @property
-    def is_directional(self) -> bool:
-        """Check jika memiliki arah (bukan netral)."""
-        return self.value != 0
+    @classmethod
+    def from_str(cls, value: str) -> 'SignalType':
+        """Convert string to SignalType"""
+        mapping = {
+            'neutral': cls.NEUTRAL,
+            'buy': cls.BUY,
+            'sell': cls.SELL,
+            'exit': cls.EXIT,
+            'stop': cls.STOP
+        }
+        return mapping.get(value.lower(), cls.NEUTRAL)
 
-    def opposite(self) -> 'SignalSide':
-        """Inversi arah untuk manajemen hedging atau pembalikan posisi."""
-        return SignalSide(-self.value) if self.is_directional else self
+class SignalStrength(Enum):
+    """Signal strength categories"""
+    WEAK = "weak"        # 0.0 - 1.0
+    MODERATE = "moderate" # 1.0 - 2.0
+    STRONG = "strong"    # 2.0 - 3.0
+    EXTREME = "extreme"  # > 3.0
 
-    def __str__(self) -> str:
-        return self.name
+class MarketState(Enum):
+    """Market regime states"""
+    IDLE = "idle"              # No data processing
+    ACCUMULATING = "accumulating"  # Building position
+    TRENDING = "trending"      # Strong trend detected
+    MEAN_REVERTING = "mean_reverting"  # Mean reversion regime
+    VOLATILE = "volatile"      # High volatility
+    SHOCK = "shock"            # Market shock detected
+    
+    @classmethod
+    def from_volatility(cls, volatility: float, threshold: float = 0.02) -> 'MarketState':
+        """Determine market state from volatility"""
+        if volatility < threshold * 0.5:
+            return cls.IDLE
+        elif volatility < threshold:
+            return cls.MEAN_REVERTING
+        elif volatility < threshold * 2:
+            return cls.TRENDING
+        else:
+            return cls.VOLATILE
 
-class SignalAction(IntEnum):
-    """Aksi eksekusi dengan state transition matrix."""
-    OPEN = auto()   # Memulai posisi baru
-    CLOSE = auto()  # Menutup posisi yang ada
-    HOLD = auto()   # Mempertahankan state saat ini (No-op)
-
-    @property
-    def requires_active_position(self) -> bool:
-        """Aksi yang membutuhkan posisi terbuka sebelumnya."""
-        return self in (SignalAction.CLOSE, SignalAction.HOLD)
-
-# ============================================================================
-# COMPATIBILITY MAPPINGS (Externalized to avoid Enum casting errors)
-# ============================================================================
-
-# Matriks Kompatibilitas Aksi terhadap Sisi
-ACTION_SIDE_COMPATIBILITY: Dict[SignalAction, Tuple[SignalSide, ...]] = {
-    SignalAction.OPEN: (SignalSide.LONG, SignalSide.SHORT),
-    SignalAction.CLOSE: (SignalSide.LONG, SignalSide.SHORT, SignalSide.NEUTRAL),
-    SignalAction.HOLD: (SignalSide.LONG, SignalSide.SHORT, SignalSide.NEUTRAL)
-}
-
-# ============================================================================
-# DATA MODELS (The Value Objects)
-# ============================================================================
-
-@dataclass(frozen=True)
-class SignalStrength:
-    """Representasi kekuatan sinyal (0.0 hingga 1.0)."""
-    value: float = 0.0
-
-    def __post_init__(self):
-        """Menjamin nilai kekuatan selalu dalam batas operasional."""
-        # Clamp value antara 0.0 dan 1.0
-        object.__setattr__(self, 'value', max(0.0, min(1.0, float(self.value))))
-
-    def __repr__(self) -> str:
-        return f"{self.value * 100:.1f}%"
-
-@dataclass(frozen=True)
-class SignalMetadata:
-    """Kontainer informasi tambahan untuk audit trail."""
-    strategy_name: str
-    strategy_version: str
-    reason: Optional[str] = None
-    extra: Dict[str, Any] = field(default_factory=dict)
+# ========== SIGNAL EVENTS ==========
 
 @dataclass(frozen=True)
 class SignalEvent:
     """
-    Atomic Signal Event - Objek tunggal yang dibawa melintasi pipeline.
+    Immutable signal event for trading decisions.
+    Used in both research and live paths.
     """
-    side: SignalSide
-    action: SignalAction
-    strength: SignalStrength = field(default_factory=SignalStrength)
-    timestamp: datetime = field(default_factory=datetime.now)
-    metadata: Optional[SignalMetadata] = None
+    timestamp: int                     # Unix timestamp in milliseconds
+    signal_type: SignalType            # Trading decision
+    strength: float                    # Z-score or confidence score
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def __post_init__(self):
+        """Validate signal event"""        
+        if not isinstance(self.timestamp, int) or self.timestamp <= 0:
+            raise ValueError("Timestamp must be positive integer")
+    
+    def to_dict(self) -> dict:
+        """Convert to dictionary for serialization"""
+        return {
+            'timestamp': self.timestamp,
+            'signal_type': self.signal_type.value,
+            'signal_type_name': self.signal_type.name,
+            'strength': self.strength,
+            'metadata': self.metadata
+        }
+    
+    def is_actionable(self, threshold: float = 1.5) -> bool:
+        """Check if signal is actionable based on strength threshold"""
+        return abs(self.strength) >= threshold
+    
+    @property
+    def is_entry(self) -> bool:
+        return self.signal_type in (SignalType.BUY, SignalType.SELL)
 
-# ============================================================================
-# FACTORY FUNCTIONS (The Interface Gates)
-# ============================================================================
+    @property
+    def is_exit(self) -> bool:
+        return self.signal_type in (SignalType.EXIT, SignalType.STOP)
 
-def create_directional_signal(
-    side: SignalSide, 
-    strength: float, 
-    ts: datetime,
-    strategy: str = "unknown",
-    version: str = "0.0.0"
-) -> SignalEvent:
-    """Helper untuk membuat sinyal Entry (LONG/SHORT)."""
-    return SignalEvent(
-        side=side,
-        action=SignalAction.OPEN,
-        strength=SignalStrength(strength),
-        timestamp=ts,
-        metadata=SignalMetadata(strategy_name=strategy, strategy_version=version)
-    )
+@dataclass
+class SignalBatch:
+    """Batch of signal events for research path"""
+    events: List[SignalEvent]
+    start_timestamp: int
+    end_timestamp: int
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dataframe(self) -> pd.DataFrame:
+        """Convert batch to DataFrame"""
+        data = [event.to_dict() for event in self.events]
+        df = pd.DataFrame(data)
+        df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
+        return df
+    
+    def filter_by_type(self, signal_type: SignalType) -> 'SignalBatch':
+        """Filter events by signal type"""
+        filtered = [e for e in self.events if e.signal_type == signal_type]
+        return SignalBatch(
+            events=filtered,
+            start_timestamp=self.start_timestamp,
+            end_timestamp=self.end_timestamp,
+            metadata=self.metadata
+        )
+    
+    def get_statistics(self) -> dict:
+        """Calculate batch statistics"""
+        if not self.events:
+            return {}
+        
+        strengths = [e.strength for e in self.events]
+        buy_signals = sum(1 for e in self.events if e.signal_type == SignalType.BUY)
+        sell_signals = sum(1 for e in self.events if e.signal_type == SignalType.SELL)
+        
+        return {
+            'total_events': len(self.events),
+            'buy_signals': buy_signals,
+            'sell_signals': sell_signals,
+            'neutral_signals': len(self.events) - buy_signals - sell_signals,
+            'mean_strength': sum(strengths) / len(strengths),
+            'max_strength': max(strengths),
+            'min_strength': min(strengths),
+            'actionable_signals': sum(1 for e in self.events if e.is_actionable()),
+            'duration_hours': (self.end_timestamp - self.start_timestamp) / (1000 * 3600)
+        }
 
-def create_exit_signal(
-    side: SignalSide, 
-    ts: datetime,
-    reason: str = "Target reached"
-) -> SignalEvent:
-    """Helper untuk membuat sinyal Exit (CLOSE)."""
-    return SignalEvent(
-        side=side,
-        action=SignalAction.CLOSE,
-        strength=SignalStrength(0.0),
-        timestamp=ts,
-        metadata=SignalMetadata(strategy_name="system", strategy_version="1.0", reason=reason)
-    )
+# ========== MARKET OBSERVATION ==========
 
-def create_neutral_signal(ts: datetime) -> SignalEvent:
-    """Helper untuk membuat sinyal HOLD (No action)."""
-    return SignalEvent(
-        side=SignalSide.NEUTRAL,
-        action=SignalAction.HOLD,
-        strength=SignalStrength(0.0),
-        timestamp=ts
-    )
+@dataclass
+class MarketObservation:
+    """
+    Live market observation for real-time processing.
+    Agnostic for data content (Spread/Price/RSI/OrderBook).
+    """
+    timestamp: int
+    data: Dict[str, Any]
+    source: str = "unknown"
+    
+    def get_value(self, key: str, type_cast: type = float) -> Result[Any, str]:
+        """
+        Safe Extraction with type checking.
+        Mencegah error 'KeyError' atau 'TypeError'
+        """
+        if key not in self.data:
+            return Err(f"Key '{key}' not found in observation")
+
+        try:
+            raw_val = self.data[key]
+            val = type_cast(raw_val)
+            return Ok(val)
+        except Exception:
+            return Err(f"Failed to cast '{key}', to '{type_cast.__name__}'")
+    
+    def get_price(self, asset: str) -> Result[float, str]:
+        """Shortcut ambil harga"""
+        return self.get_value(f"close_{asset}", float)
+
+    def get_volume(self, asset: str) -> Result[float, str]:
+        """Shortcut ambil volume"""
+        return self.get_value(f"volume_{asset}", float)
+
+
+# ========== STRATEGY CONFIGURATION ==========
+
+@dataclass(frozen=True)
+class SignalConfig:
+    """
+    Configuration SPECIFIC to Signal Generation Logic (Thresholds & Risk).
+    NOTE: Math parameters (R, Q) belong to KalmanConfig in core.math.
+    """
+    name: str
+    
+    # Signal Logic Parameters (Z-Score Thresholds)
+    entry_z_score: float = 2.0    # Trigger Entry (Short > 2.0, Long < -2.0)
+    exit_z_score: float = 0.5     # Trigger Exit (Back to Mean)
+    stop_loss_z: float = 4.0      # Circuit Breaker (Too volatile)
+    
+    # Position Sizing & Risk
+    max_position: float = 1.0     # Max allocation (1.0 = 100%)
+    hedge_ratio: float = 1.0      # Default hedge ratio (bisa override nanti)
+    
+    # Metadata
+    version: str = "1.0.0"
+    
+    def validate(self) -> Result[None, str]:
+        """Fail-fast validation for logic errors"""
+        if self.entry_z_score <= self.exit_z_score:
+            return Err(f"Entry threshold ({self.entry_z_score}) must be higher than exit threshold ({self.exit_z_score})")
+            
+        if self.stop_loss_z <= self.entry_z_score:
+            return Err(f"Stop loss ({self.stop_loss_z}) must be wider than entry threshold ({self.entry_z_score})")
+            
+        if self.max_position <= 0:
+            return Err("Max position must be positive")
+            
+        return Ok(None)
+
+

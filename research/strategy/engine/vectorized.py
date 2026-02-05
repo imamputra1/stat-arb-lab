@@ -1,175 +1,129 @@
-"""
-HYBRID BACKTEST ENGINE (THE SIMULATOR)
-Location: research/strategy/engine/vectorized.py
-Focus: Online learning simulation with strict no look-ahead bias.
-Paradigm: Hybrid vectorization (Polars for I/O, Numpy for recursive updates).
-"""
-import logging
-import time
-from typing import Dict, List, Any
+import polars as pl
 import numpy as np
-from datetime import datetime, timedelta
+from typing import Dict, Any
+from dataclasses import dataclass
+from core.shared import Result, Ok, Err
+from core.signals.base_signal import BaseStrategy
 
-from core.shared import Ok, Err, Result
-from research.ingestion.loader import SilverDataLoader
-from core.math.base import StrategyModel
+@dataclass
+class BacktestConfig:
+    initial_capital: float
+    transaction_cost_pct: float
+    slippage_pct: float
 
-logger = logging.getLogger("HybridEngine")
-
-class HybridBacktestEngine:
-    """
-    High-performance simulation engine for dynamic strategies.
-    Orchestrates Logistics (Data) and Brain (Model) with microsecond precision.
-    """
-
+class VectorizedBacktestEngine:
     def __init__(
-        self,
-        loader: SilverDataLoader,
-        model: StrategyModel,
-        entry_threshold: float = 2.0,
-        exit_threshold: float = 0.5,
-        warmup_days: int = 30,
-        target_col: str = "log_DOGE",     # Default fallback
-        feature_cols: List[str] = None    # Default fallback
+        self, 
+        initial_capital: float = 10_000.0, 
+        transaction_cost_pct: float = 0.001,
+        slippage_pct: float = 0.0005
     ):
-        self.loader = loader
-        self.model = model
-        self.warmup_days = warmup_days
-        self.entry_threshold = entry_threshold
-        self.exit_threshold = exit_threshold
-        
-        # Handle defaults list mutable argument
-        self.default_target = target_col
-        self.default_features = feature_cols if feature_cols else ["log_BTC"]
+        self.config = BacktestConfig(
+            initial_capital=initial_capital,
+            transaction_cost_pct=transaction_cost_pct,
+            slippage_pct=slippage_pct
+        )
 
-    def run(
-        self,
-        start_date: str,
-        end_date: str,
-        symbols: List[str] = None, # Changed signature to match Pipeline call
-        target_col: str = None,    # Optional override
-        feature_cols: List[str] = None # Optional override
-    ) -> Result[Dict[str, Any], str]:
-        """
-        Executes the full hybrid backtest cycle.
-        Returns a raw Dictionary containing all simulation artifacts.
-        """
+    def run(self, data: pl.DataFrame, strategy: BaseStrategy) -> Result[Dict[str, Any], str]:
         try:
-            # 1. SETUP ASSETS
-            target = symbols[0] if symbols else "DOGE"
-            anchor = symbols[1] if symbols and len(symbols) > 1 else "BTC"
+            sig_res = strategy.generate_signals(data)
+            if sig_res.is_err(): return Err(f"Signal Gen Failed: {sig_res.error}")
             
-            # Use columns from args or defaults, construct standard names if needed
-            t_col = target_col if target_col else f"log_{target}"
-            f_cols = feature_cols if feature_cols else [f"log_{anchor}"]
+            signals = sig_res.unwrap()
             
-            logger.info(f"ENGINE START | Target: {t_col} | Features: {f_cols}")
-            start_ts = time.time()
+            # Smart Align: Join on index/timestamp is safer, but assuming aligned for speed if index matches
+            # Efficient Projection: Only keep necessary columns
+            df = data.select(["timestamp", "target_price"]).with_columns([
+                signals["position"],
+                signals["action"]
+            ])
 
-            # 2. LOAD & PREPARE
-            dt_start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
-            adjusted_start = (dt_start - timedelta(days=self.warmup_days)).strftime("%Y-%m-%d")
-            
-            # Load explicit symbols for column selection
-            load_symbols = [target, anchor] 
-            load_res = self.loader.load(start_date=adjusted_start, end_date=end_date, symbols=load_symbols)
-            
-            if load_res.is_err(): return Err(load_res.error)
-            
-            # Eager collection
-            full_df = load_res.unwrap().sort("timestamp").collect()
-            
-            # Validate Columns exist
-            missing_cols = [c for c in [t_col] + f_cols if c not in full_df.columns]
-            if missing_cols:
-                return Err(f"Missing columns in data: {missing_cols}")
+            # 1. Market Returns (Vectorized)
+            df = df.with_columns([
+                pl.col("target_price").pct_change().fill_null(0.0).alias("market_ret")
+            ])
 
-            # 3. WARM-UP & SPLIT
-            warmup_rows = self.warmup_days * 1440
-            if full_df.height <= warmup_rows:
-                return Err(f"Insufficient data: {full_df.height} rows <= {warmup_rows} warmup rows")
-                
-            warmup_df = full_df.head(warmup_rows)
-            test_df = full_df.tail(-warmup_rows)
+            # 2. Strategy Returns (Lagged Position * Market Return)
+            # Position hari ini (T) hanya menikmati return besok (T+1), maka shift(1) posisi.
+            df = df.with_columns([
+                pl.col("position").shift(1).fill_null(0).alias("prev_pos")
+            ])
+            
+            df = df.with_columns([
+                (pl.col("prev_pos") * pl.col("market_ret")).alias("gross_ret")
+            ])
 
-            # Train Model
-            train_res = self.model.train(warmup_df, t_col, f_cols)
-            if train_res.is_err(): return Err(f"Warm-up Failure: {train_res.error}")
+            # 3. Cost Model (Transaction + Slippage)
+            # Cost dikenakan saat posisi berubah (Delta Position != 0)
+            total_cost_factor = self.config.transaction_cost_pct + self.config.slippage_pct
+            
+            df = df.with_columns([
+                (pl.col("position") - pl.col("prev_pos")).abs().alias("pos_delta")
+            ])
+            
+            df = df.with_columns([
+                (pl.col("pos_delta") * total_cost_factor).alias("total_cost")
+            ])
 
-            # 4. EXECUTE SIMULATION
-            logger.info(f"SIMULATION | Iterating {test_df.height} bars...")
+            # 4. Net Returns & Equity Curve
+            df = df.with_columns([
+                (pl.col("gross_ret") - pl.col("total_cost")).alias("net_ret")
+            ])
+
+            df = df.with_columns([
+                (1 + pl.col("net_ret")).cum_prod().alias("cum_ret")
+            ])
             
-            # Extract raw numpy arrays for speed
-            timestamps = test_df.get_column("timestamp").to_list() # Keep as list/objects
-            target_values = test_df.get_column(t_col).to_numpy()
-            feature_values = test_df.get_column(f_cols[0]).to_numpy() # Support single feature for now
+            df = df.with_columns([
+                (pl.col("cum_ret") * self.config.initial_capital).alias("equity")
+            ])
+
+            # 5. Advanced Metrics (Numpy Optimized)
+            eq_curve = df["equity"].to_numpy()
+            net_rets = df["net_ret"].to_numpy()
             
-            sim_data = self._execute_simulation_loop(target_values, feature_values, t_col, f_cols[0])
+            final_cap = eq_curve[-1]
+            total_ret_pct = ((final_cap - self.config.initial_capital) / self.config.initial_capital) * 100
             
-            # 5. ASSEMBLE RESULT DICTIONARY (Contract Fixed)
-            # Pipeline expects: timestamps, signals, target_values, feature_values, states
-            result_payload = {
-                "timestamps": timestamps,
-                "target_values": target_values.tolist(),
-                "feature_values": [feature_values.tolist()], # Pipeline expects list of lists for features
-                "signals": sim_data["z_scores"],
-                "states": sim_data["states"], # Full state dictionaries
-                
-                # Metadata for reporting
-                "performance_metrics": {}, # Placeholder, calculated in pipeline
-                "trade_analysis": {},      # Placeholder
-                "model_metrics": {
-                    "final_beta": sim_data["states"][-1]["beta"] if sim_data["states"] else 0.0
-                },
-                "simulation_summary": {
-                    "start_date": start_date,
-                    "end_date": end_date,
-                    "duration_seconds": time.time() - start_ts,
-                    "total_rows": len(target_values)
-                }
+            # Sharpe (Annualized assumption: Crypto 365d or Trading Days 252d? Defaulting 365 for 24/7 markets)
+            # Menggunakan safe division untuk menghindari zero division error
+            std_dev = np.std(net_rets)
+            sharpe = (np.mean(net_rets) / std_dev * np.sqrt(365 * 24 * 60)) if std_dev > 1e-9 else 0.0 # Assumes minute data
+            
+            # Max Drawdown
+            peak = np.maximum.accumulate(eq_curve)
+            dd = (eq_curve - peak) / peak
+            max_dd_pct = np.min(dd) * 100
+
+            # Trade Statistics
+            trade_mask = df["pos_delta"] > 0
+            total_trades = df.filter(trade_mask).height
+            
+            metrics = {
+                "initial_capital": self.config.initial_capital,
+                "final_capital": final_cap,
+                "total_return_pct": total_ret_pct,
+                "sharpe_ratio": sharpe,
+                "max_drawdown_pct": max_dd_pct,
+                "total_trades": total_trades
             }
-
-            return Ok(result_payload)
+            
+            return Ok({
+                "metrics": metrics,
+                "equity_curve": df,
+                "trade_log": df.filter(trade_mask) # Return rows where trades happened
+            })
 
         except Exception as e:
-            logger.error(f"Engine Crash: {str(e)}", exc_info=True)
-            return Err(f"Simulation Error: {str(e)}")
+            return Err(f"Backtest Runtime Error: {str(e)}")
 
-
-    def _execute_simulation_loop(self, y_vec: np.ndarray, x_vec: np.ndarray, target_name: str, feat_name: str) -> Dict[str, List]:
-        z_scores, states, positions = [], [], []
-        current_pos = 0 # 0: Neutral, 1: Long Spread, -1: Short Spread
-        
-        for i in range(len(y_vec)):
-            obs = {feat_name: x_vec[i], target_name: y_vec[i]}
-            
-            # 1. PREDICT SIGNAL
-            pred_res = self.model.predict(obs)
-            z = pred_res.unwrap() if pred_res.is_ok() else 0.0
-            
-            # 2. TRADING LOGIC (The Missing Link)
-            if current_pos == 0:
-                if z < -self.entry_threshold: current_pos = 1
-                elif z > self.entry_threshold: current_pos = -1
-            elif current_pos == 1 and z > -self.exit_threshold:
-                current_pos = 0
-            elif current_pos == -1 and z < self.exit_threshold:
-                current_pos = 0
-            
-            # 3. UPDATE MODEL & STORE
-            self.model.update(obs)
-            state_snapshot = self.model.get_state().unwrap()
-            
-            z_scores.append(z)
-            states.append(state_snapshot)
-            positions.append(current_pos) # Pastikan posisi dicatat!
-            
-        return {
-            "z_scores": z_scores,
-            "states": states,
-            "positions": positions
-        }
-
-# --- FACTORY ---
-def create_backtest_engine(loader, model, **kwargs) -> HybridBacktestEngine:
-    return HybridBacktestEngine(loader, model, **kwargs)
+def create_vectorized_backtest_engine(
+    initial_capital: float = 10_000.0,
+    transaction_cost_pct: float = 0.001,
+    slippage_pct: float = 0.0005
+) -> VectorizedBacktestEngine:
+    return VectorizedBacktestEngine(
+        initial_capital=initial_capital,
+        transaction_cost_pct=transaction_cost_pct,
+        slippage_pct=slippage_pct
+    )

@@ -1,134 +1,178 @@
 """
-BASE SIGNAL INTERFACE (THE CONSTITUTION) - V12.2 QUANTUM
-Location: core/signals/base_signal.py
-Focus: Full structural protocols and industrial base class with Orchestrator.
+Abstract Base Strategy - Standard Socket Interface
+Protocol for all trading strategies in ORCA system
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Protocol, runtime_checkable, List, TypeVar, Generic, Callable
-from dataclasses import dataclass
-import polars as pl
-import logging
-from core.shared import Result, Ok, Err
-from .types import SignalEvent
+from typing import Protocol, runtime_checkable, Generic, TypeVar, Any, List
+import pandas as pd
 
-# ====================== TYPE VARIABLES ======================
-T = TypeVar('T')
 
-# ====================== DATA MODELS ======================
+from ..shared.result import Result, Ok, Err
+from ..shared.performance import PerformanceMonitor
+from .types import SignalEvent, MarketState
 
-@dataclass(frozen=True)
-class DataRequirement:
-    """Spesifikasi kolom data wajib dengan validasi Polars."""
-    column_name: str
-    data_type: Any
-    required: bool = True
-
-@dataclass(frozen=True)
-class ValidationResult:
-    """Hasil validasi data yang dipahami oleh Strategy V11."""
-    is_valid: bool
-    error_summary: str = ""
-
-# ====================== STRUCTURAL PROTOCOLS ======================
+T = TypeVar('T', bound='BaseStrategy')
 
 @runtime_checkable
 class StrategyProtocol(Protocol):
-    """Kontrak struktural utama untuk semua strategi."""
-    name: str
-    version: str
+    """Structural protocol for all strategies - no inheritance required"""
     
-    def generate_signals(self, df: pl.DataFrame) -> Result[pl.DataFrame, str]: ...
-    def evaluate_state(self, observation: Dict[str, Any]) -> Result[Any, str]: ...
-
-@runtime_checkable
-class LifecycleProtocol(Protocol):
-    """Manajemen state untuk strategi yang memiliki memori."""
-    def warm_up(self, historical_data: pl.DataFrame) -> Result[bool, str]: ...
-    def reset_state(self) -> None: ...
-
-# ====================== THE BASE CONTRACT ======================
+    def generate_signals(self, df: pd.DataFrame) -> Result[pd.DataFrame, str]:
+        """Research path - batch processing"""
+        ...
+    
+    def evaluate_state(self, obs: dict) -> Result[SignalEvent, str]:
+        """Live path - real-time evaluation"""
+        ...
+    
+    def get_state(self) -> MarketState:
+        """Get current market state"""
+        ...
+    
+    def reset(self) -> None:
+        """Reset strategy state"""
+        ...
 
 class BaseStrategy(ABC, Generic[T]):
-    """Immutable Contract for all Orca Strategies."""
+    """
+    Abstract Base Strategy implementing Socket Standard.
+    Dual-path architecture for Research (batch) and Live (real-time).
+    """
     
-    def __init__(self, name: str, version: str):
-        self._name = name
-        self._version = version
-        self.logger = logging.getLogger(f"Orca.Strategy.{name}")
-
-    @property
-    @abstractmethod
-    def data_requirements(self) -> Dict[str, DataRequirement]:
-        """Mendefinisikan kolom wajib untuk strategi."""
-        pass
-
-    @abstractmethod
-    def generate_signals(self, df: pl.DataFrame) -> Result[pl.DataFrame, str]:
-        """Logika batch processing."""
-        pass
-
-    @abstractmethod
-    def evaluate_state(self, observation: Dict[str, Any]) -> Result[Any, str]:
-        """Logika real-time processing."""
-        pass
-
-    def validate_data(self, df: pl.DataFrame) -> ValidationResult:
-        """Validasi integritas DataFrame."""
-        missing = [k for k, v in self.data_requirements.items() if v.required and k not in df.columns]
-        if missing:
-            return ValidationResult(False, f"Missing required columns: {missing}")
-        return ValidationResult(True)
-
-    def preprocess_observation(self, observation: Dict[str, Any]) -> Result[Dict[str, Any], str]:
-        """Standarisasi observasi sebelum diproses."""
-        if not observation:
-            return Err("Empty observation")
-        return Ok(observation)
-
-    @property
-    def name(self) -> str: return self._name
-
-    @property
-    def version(self) -> str: return self._version
-
-    def __repr__(self) -> str:
-        return f"<{self.__class__.__name__}({self.name} v{self.version})>"
-
-# ============================================================================
-# COMPOSITION BUILDER (High-Order Strategy)
-# ============================================================================
-
-class StrategyOrchestrator:
-    """
-    Membangun strategi kompleks melalui komposisi fungsional.
-    """
-    def __init__(self, base: BaseStrategy):
-        self.base = base
-        self._pre: List[Callable] = []
-        self._post: List[Callable] = []
-
-    def with_preprocessing(self, func: Callable) -> 'StrategyOrchestrator':
-        self._pre.append(func)
-        return self
-
-    def with_postprocessing(self, func: Callable) -> 'StrategyOrchestrator':
-        self._post.append(func)
-        return self
-
-    def execute_live(self, obs: Dict[str, Any]) -> Result[SignalEvent, str]:
-        # 1. Pipeline Pre-processing
-        current_obs = obs
-        for p in self._pre:
-            current_obs = p(current_obs)
-            
-        # 2. Base Logic Execution
-        res = self.base.evaluate_state(current_obs)
-        if res.is_err(): return res
+    def __init__(self, name: str, version: str = "1.0.0"):
+        self.name = name
+        self.version = version
+        self._state: MarketState = MarketState.IDLE
+        self.monitor = PerformanceMonitor(history_size=1000)
         
-        # 3. Pipeline Post-processing (Filtering/Sizing)
-        signal = res.unwrap()
-        for p in self._post:
-            signal = p(signal)
+    # ========== ABSTRACT INTERFACE ==========
+    
+    @abstractmethod
+    def _initialize_filter(self, initial_value: float) -> Result[Any, str]:
+        """Initialize the underlying mathematical filter"""
+        pass
+    
+    @abstractmethod
+    def _process_observation(self, spread: float, timestamp: int) -> Result[SignalEvent, str]:
+        """Process single observation through mathematical kernel"""
+        pass
+    
+    @abstractmethod
+    def _extract_spread(self, data: dict | pd.Series) -> Result[float, str]:
+        """Extract spread value from different data formats"""
+        pass
+    
+    # ========== DUAL-PATH IMPLEMENTATIONS ==========
+    
+    def generate_signals(self, df: pd.DataFrame) -> Result[pd.DataFrame, str]:
+        """
+        Research Path: Batch processing of historical data.
+        
+        Args:
+            df: Silver Lake DataFrame with required columns including spread
             
-        return Ok(signal)
+        Returns:
+            DataFrame with original data + signal columns
+        """
+        pass
+    
+    def evaluate_state(self, obs: dict) -> Result[SignalEvent, str]:
+        """
+        Live Path: Real-time evaluation of single observation.
+        
+        Args:
+            obs: Real-time observation dictionary with market data
+            
+        Returns:
+            SignalEvent with trading decision
+        """
+        pass
+
+
+    # ==========================================================================
+    # STATE MANAGEMENT (GENERIC)
+    # ==========================================================================
+    
+    def get_state(self) -> MarketState:
+        """Get current market state"""
+        return self._state
+
+    def reset(self) -> Result[None, str]:
+        """
+        [GENERIC RESET]
+        Hanya reset state umum. Logic spesifik (seperti filter) 
+        harus di-handle oleh override method di child class.
+        """
+        try:
+            self._state = MarketState.IDLE
+            # Reset monitor, bukan dict manual
+            self.monitor = PerformanceMonitor(history_size=1000) 
+            return Ok(None)
+        except Exception as e:
+            return Err(f"Base reset failed: {str(e)}")
+
+    def get_performance_metrics(self) -> dict[str, Any]:
+        """Expose metrics dari PerformanceMonitor"""
+        # Kita ambil summary statistik dari monitor
+        return {
+            "avg_latency": self.monitor.get_avg_latency("signal_generation"),
+            "total_ops": self.monitor.total_operations
+        }
+
+    # ==========================================================================
+    # UTILITY METHODS (REPLACEMENT)
+    # ==========================================================================
+    
+    # HAPUS _validate_dataframe yang lama.
+    # GANTIKAN dengan validate_data yang dinamis ini:
+    
+    def validate_data(self, df: pd.DataFrame, required_cols: List[str] = None) -> Result[bool, str]:
+        """
+        [GENERIC VALIDATION]
+        Cek kelengkapan data tanpa hardcode nama kolom.
+        """
+        if df is None or df.empty:
+            return Err(f"Strategy {self.name}: Input DataFrame is empty or None")
+            
+        # Selalu cek timestamp karena itu mandatory buat semua time-series strategy
+        if 'timestamp' not in df.columns:
+             return Err(f"Strategy {self.name}: Missing 'timestamp' column")
+            
+        # Cek kolom dinamis sesuai request anak (Child Class)
+        if required_cols:
+            missing = [col for col in required_cols if col not in df.columns]
+            if missing:
+                return Err(f"Strategy {self.name}: Missing required columns: {missing}")
+                
+        return Ok(True)
+    
+# ========== FACTORY PATTERN ==========
+
+class StrategyFactory:
+    """Factory for creating strategy instances"""
+    
+    _registry: dict[str, type[BaseStrategy]] = {}
+    
+    @classmethod
+    def register(cls, name: str, strategy_class: type[BaseStrategy]) -> None:
+        """Register a strategy class"""
+        cls._registry[name] = strategy_class
+    
+    @classmethod
+    def create(cls, name: str, **kwargs) -> Result[BaseStrategy, str]:
+        """Create a strategy instance"""
+        if name not in cls._registry:
+            return Err(f"Strategy '{name}' not registered")
+        
+        try:
+            strategy_class = cls._registry[name]
+            instance = strategy_class(**kwargs)
+            return Ok(instance)
+        except Exception as e:
+            return Err(f"Failed to create strategy '{name}': {str(e)}")
+    
+    @classmethod
+    def list_available(cls) -> list[str]:
+        """List all available strategies"""
+        return list(cls._registry.keys())
