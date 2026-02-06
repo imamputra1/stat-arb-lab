@@ -1,7 +1,8 @@
 """
 Facade Pattern untuk Math Subsystem
 """
-
+# Re-export Result pattern untuk consistency
+from core.shared.result import Result, Ok, Err, match_result, safe_async
 from .kalman import (
     # Core Types
     AdaptiveKalmanFilter,
@@ -31,9 +32,6 @@ from .kalman import (
 
 # Alias untuk backward compatibility
 KalmanFilter = AdaptiveKalmanFilter
-
-# Re-export Result pattern untuk consistency
-from core.shared.result import Result, Ok, Err, match_result, safe_async
 
 __all__ = [
     # Core

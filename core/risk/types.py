@@ -264,6 +264,11 @@ class TradeVerdict:
             metadata={"warning": warning_msg}
         )
 
+    def replace_risk_level(self, new_level: 'RiskLevel') -> 'TradeVerdict':
+        """Helper untuk update level pada frozen dataclass"""
+        from dataclasses import replace
+        return replace(self, risk_level=new_level)
+
 @dataclass
 class RiskMetrics:
     """Real-time risk metrics"""

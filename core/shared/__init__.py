@@ -23,6 +23,7 @@ from .domain import (
     AsyncResult
 )
 from .performance import PerformanceMonitor
+from .utils import get_logger
 
 __all__ = [
     "Result", 
@@ -48,5 +49,6 @@ __all__ = [
     "AsyncResult",
     "PerformanceMonitor"
 
+    "get_logger"
 ]
 
