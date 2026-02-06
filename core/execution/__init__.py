@@ -1,93 +1,64 @@
 """
-EXECUTION MODULE FACADE
+EXECUTION MODULE - FACADE
 Location: core/execution/__init__.py
-Desc: Clean facade exposing only the essential interfaces.
+Desc: Expose core components cleanly.
 """
 
-# Re-export core types
+# 1. Types (Vocabulary)
 from .types import (
-    # Enums
-    OrderType,
-    OrderSide,
-    OrderStatus,
-    TimeInForce,
-    
-    # Core Entities
-    OrderRequest,
-    Order,
-    TradeFill,
+    Order, 
+    OrderRequest, 
+    TradeFill, 
     ExecutionReport,
-    
-    # Factory
-    OrderFactory,
-    
-    # Metrics
-    ExecutionMetrics,
-    
-    # Protocols
-    Executable,
+    OrderStatus, 
+    OrderType, 
+    OrderSide, 
+    TimeInForce,
+    OrderResult,
+    FillResult,
+    ExecutionReportResult,
+    Symbol,
+    Currency,
+    OrderFactory
 )
 
-# Re-export simulator
-from .simulator import ExecutionSimulator
+# 2. Protocols (Contracts)
+from .protocols import (
+    ExecutionHandler,
+    RiskManagerProtocol,
+    MarketDataProvider
+)
 
-# Version
-__version__ = "2.0.0"
-__author__ = "Trading Systems Engineering"
-__description__ = "Industrial-grade execution simulation system"
+# 3. Base Implementation (Foundation)
+from .base import BaseExecutionHandler
 
-# Shortcut functions
-def create_market_order(
-    symbol: str,
-    side: OrderSide,
-    quantity: float,
-    **kwargs
-) -> OrderRequest:
-    """Convenience function for creating market orders"""
-    return OrderFactory.market(symbol, side, quantity, **kwargs)
+# 4. Configuration & Exceptions
+from .config import ExecutionConfig
+from .exceptions import (
+    ExecutionError,
+    InsufficientFundsError,
+    OrderNotFoundError,
+    RateLimitError
+)
 
-def create_limit_order(
-    symbol: str,
-    side: OrderSide,
-    quantity: float,
-    price: float,
-    **kwargs
-) -> OrderRequest:
-    """Convenience function for creating limit orders"""
-    return OrderFactory.limit(symbol, side, quantity, price, **kwargs)
+# 5. OMS (State Manager) - Kita akan buat ini setelah Mechanics
+# from .oms import OrderManagementSystem
 
-# Export convenience functions
 __all__ = [
-    # Core Types
-    'OrderType',
-    'OrderSide',
-    'OrderStatus',
-    'TimeInForce',
-    
-    # Core Entities
-    'OrderRequest',
-    'Order',
-    'TradeFill',
-    'ExecutionReport',
-    
-    # Factory
-    'OrderFactory',
-    
-    # Simulator
-    'ExecutionSimulator',
-    
-    # Metrics
-    'ExecutionMetrics',
+    # Types
+    'Order', 'OrderRequest', 'TradeFill', 'ExecutionReport',
+    'OrderStatus', 'OrderType', 'OrderSide', 'TimeInForce',
+    'OrderResult', 'FillResult', 'ExecutionReportResult',
+    'Symbol', 'Currency', 'OrderFactory',
     
     # Protocols
-    'Executable',
+    'ExecutionHandler', 'RiskManagerProtocol', 'MarketDataProvider',
     
-    # Convenience Functions
-    'create_market_order',
-    'create_limit_order',
+    # Base
+    'BaseExecutionHandler',
     
-    # Version info
-    '__version__',
-    '__author__',
-    '__description__',
+    # Config & Exceptions
+    'ExecutionConfig',
+    'ExecutionError', 'InsufficientFundsError', 
+    'OrderNotFoundError', 'RateLimitError'
 ]
