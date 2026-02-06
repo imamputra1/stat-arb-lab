@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import (
     Optional, Dict, Any, List, Tuple, 
-    FrozenSet, ClassVar, Self, Protocol, runtime_checkable
+    FrozenSet, Self, Protocol, runtime_checkable
 )
 from decimal import Decimal
 from functools import cached_property
@@ -94,8 +94,12 @@ class OrderSide(str, Enum):
         """Returns +1 for BUY, -1 for SELL (useful for P&L calculations)"""
         return 1 if self == OrderSide.BUY else -1
 
+# ====================== ORDER STATUS (FIXED) ======================
+
 class OrderStatus(str, Enum):
-    """Order lifecycle states with state machine logic"""
+    """
+    Order lifecycle states with state machine logic.
+    """
     PENDING = "PENDING"           # Sent but not yet acknowledged
     ACKNOWLEDGED = "ACKNOWLEDGED" # Exchange acknowledged
     OPEN = "OPEN"                 # In order book
@@ -105,32 +109,62 @@ class OrderStatus(str, Enum):
     REJECTED = "REJECTED"
     EXPIRED = "EXPIRED"           # For time-in-force orders
     
-    # Valid state transitions
-    _TRANSITIONS: ClassVar[Dict['OrderStatus', FrozenSet['OrderStatus']]] = {
-        PENDING: frozenset([ACKNOWLEDGED, REJECTED]),
-        ACKNOWLEDGED: frozenset([OPEN, REJECTED, CANCELED]),
-        OPEN: frozenset([PARTIALLY_FILLED, FILLED, CANCELED, EXPIRED]),
-        PARTIALLY_FILLED: frozenset([FILLED, CANCELED, EXPIRED]),
-        FILLED: frozenset([]),  # Terminal state
-        CANCELED: frozenset([]),  # Terminal state
-        REJECTED: frozenset([]),  # Terminal state
-        EXPIRED: frozenset([]),  # Terminal state
-    }
-    
     def can_transition_to(self, new_status: 'OrderStatus') -> bool:
-        """Check if transition is valid"""
-        return new_status in self._TRANSITIONS.get(self, frozenset())
+        """Check if transition is valid using external mapping"""
+        # [FIX] Ambil mapping dari variabel global di bawah class ini
+        allowed = _ORDER_STATUS_TRANSITIONS.get(self, frozenset())
+        return new_status in allowed
     
     def is_terminal(self) -> bool:
         """Check if status is terminal"""
-        return self in {OrderStatus.FILLED, OrderStatus.CANCELED, 
-                       OrderStatus.REJECTED, OrderStatus.EXPIRED}
+        return self in {
+            OrderStatus.FILLED, 
+            OrderStatus.CANCELED, 
+            OrderStatus.REJECTED, 
+            OrderStatus.EXPIRED
+        }
     
     def is_active(self) -> bool:
         """Check if order is still active"""
-        return self in {OrderStatus.PENDING, OrderStatus.ACKNOWLEDGED, 
-                       OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED}
+        return self in {
+            OrderStatus.PENDING, 
+            OrderStatus.ACKNOWLEDGED, 
+            OrderStatus.OPEN, 
+            OrderStatus.PARTIALLY_FILLED
+        }
 
+# [FIX] Definisikan Mapping Transisi DI LUAR Class
+# Agar tidak terkena NameError saat runtime.
+_ORDER_STATUS_TRANSITIONS: Dict[OrderStatus, FrozenSet[OrderStatus]] = {
+    OrderStatus.PENDING: frozenset([
+        OrderStatus.ACKNOWLEDGED, 
+        OrderStatus.REJECTED,
+        OrderStatus.CANCELED  # Kadang bisa cancel sebelum ack
+    ]),
+    OrderStatus.ACKNOWLEDGED: frozenset([
+        OrderStatus.OPEN, 
+        OrderStatus.REJECTED, 
+        OrderStatus.CANCELED,
+        OrderStatus.FILLED  # Instant fill (Market Order)
+    ]),
+    OrderStatus.OPEN: frozenset([
+        OrderStatus.PARTIALLY_FILLED, 
+        OrderStatus.FILLED, 
+        OrderStatus.CANCELED, 
+        OrderStatus.EXPIRED,
+        OrderStatus.REJECTED # Rare case
+    ]),
+    OrderStatus.PARTIALLY_FILLED: frozenset([
+        OrderStatus.FILLED, 
+        OrderStatus.CANCELED, 
+        OrderStatus.EXPIRED
+    ]),
+    # Terminal states have no transitions
+    OrderStatus.FILLED: frozenset(),
+    OrderStatus.CANCELED: frozenset(),
+    OrderStatus.REJECTED: frozenset(),
+    OrderStatus.EXPIRED: frozenset(),
+}
 class TimeInForce(str, Enum):
     """Order time-in-force policies"""
     GTC = "GTC"       # Good Till Canceled
@@ -882,6 +916,17 @@ class ExecutionMetrics:
             "completed_orders": sum(1 for o in self._orders.values() if o.is_terminal),
         }
 
+# ====================== TYPE ALIASES ======================
+
+# Hasil operasi Order: Berhasil (Order) atau Gagal (String Error)
+OrderResult = Result[Order, str] 
+
+# Hasil operasi Fill: Berhasil (TradeFill) atau Gagal (String Error)
+FillResult = Result[TradeFill, str]
+
+# Hasil operasi Report
+ExecutionReportResult = Result[ExecutionReport, str]
+
 # ====================== EXPORTS ======================
 
 __all__ = [
@@ -903,12 +948,8 @@ __all__ = [
     # Protocols
     'Executable',
     
-    # Metrics
-    'ExecutionMetrics',
-    
-    # Utilities
-    'ValidationError',
-    'validate_positive',
-    'validate_non_negative',
-    'validate_price',
+    # [TAMBAHKAN INI] Type Aliases
+    'OrderResult',
+    'FillResult',
+    'ExecutionReportResult' 
 ]
