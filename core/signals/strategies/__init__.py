@@ -3,8 +3,9 @@ CORE STRATEGIES FACADE
 Exposes concrete strategy implementations (The Motherboards).
 """
 
-from .kalman_mr import KalmanMRStrategy
+from .kalman_mr import KalmanMeanReversion, KalmanState
 
 __all__ = [
-    'KalmanMRStrategy'
+    'KalmanMeanReversion',
+    'KalmanState'
 ]

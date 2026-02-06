@@ -46,6 +46,7 @@ class KalmanMRState:
     total_pnl: float = 0.0
     trade_count: int = 0
     consecutive_errors: int = 0
+    observation_count: int = 0
     spread_history: List[float] = field(default_factory=list)  # Buffer untuk vol calculation
     price_pair: Tuple[str, str] = ("", "")  # (asset_y, asset_x)
 
@@ -90,7 +91,7 @@ class KalmanMeanReversion(BaseStrategy):
         self._warmup_count = 0
         
         # Validasi konfigurasi
-        validation = self.sig_config.validated()
+        validation = self.sig_config.validate()
         if validation.is_err():
             raise ValueError(f"Invalid signal config: {validation.unwrap_err()}")
         
@@ -134,6 +135,8 @@ class KalmanMeanReversion(BaseStrategy):
             # Validate input
             if not np.isfinite(spread):
                 return Err(f"Invalid spread value: {spread}")
+
+            self._internal_state.observation_count +=1
             
             # Ensure filter is initialized
             if self._kalman_filter is None:
@@ -251,6 +254,49 @@ class KalmanMeanReversion(BaseStrategy):
             except: 
                 pass
         return Err("No spread found")
+
+    def _extract_spread_from_series(self, data: pd.Series) -> Result[float, str]:
+        """
+        [EXTRACTOR] Handle input dari DataFrame Row (pd.Series).
+        Dipanggil saat Batch Processing (Backtest).
+        """
+        try:
+            # 1. Cek jika kolom 'spread' sudah ada (pre-calculated)
+            spread_columns = ['spread', 'spread_DOGE', 'beta_DOGE_BTC', 'log_spread']
+            for col in spread_columns:
+                if col in data.index:
+                    val = data[col]
+                    if pd.notnull(val): return Ok(float(val))
+            
+            # 2. Deteksi dinamis kolom harga (close_*)
+            price_cols = [c for c in data.index if str(c).startswith('close_')]
+            
+            if len(price_cols) < 2:
+                return Err(f"Insufficient price data in row. Found: {price_cols}")
+            
+            # Asumsi konvensi: Kolom pertama adalah Y (Dependent), kedua adalah X (Independent)
+            col_y, col_x = price_cols[0], price_cols[1]
+            
+            # 3. Update Pair Info (sekali saja agar report cantik)
+            if self._internal_state.price_pair == ("", ""):
+                asset_y = str(col_y).replace('close_', '')
+                asset_x = str(col_x).replace('close_', '')
+                self._internal_state.price_pair = (asset_y, asset_x)
+            
+            # 4. Ambil nilai harga dengan aman
+            p_y = data.get(col_y)
+            p_x = data.get(col_x)
+            
+            # Cek validitas data (Anti-NaN/None)
+            if p_y is None or p_x is None or pd.isnull(p_y) or pd.isnull(p_x):
+                return Err("Price data contains NaNs or None")
+
+            # 5. Panggil Voltage Regulator (Single Source of Truth)
+            # [FIX UTAMA] Menggunakan _calculate_spread agar konsisten
+            return Ok(self._calculate_spread(float(p_y), float(p_x)))
+            
+        except Exception as e:
+            return Err(f"Series extraction failed: {str(e)}")
 
     def _calculate_spread(self, price_y: float, price_x: float) -> float:
         """
@@ -496,9 +542,10 @@ class KalmanMeanReversion(BaseStrategy):
             result_df['signal_metadata'] = [s.metadata for s in signals]
             
             # Add derived columns
-            if 'zscore' in signals[0].metadata:
-                result_df['z_score'] = [s.metadata.get('zscore', 0.0) for s in signals]
-            
+            result_df['z_score'] = [s.metadata.get('zscore', 0.0) for s in signals]
+
+            result_df['spread_val'] = [s.metadata.get('spread', 0.0) for s in signals]
+            result_df['estimate'] = [s.metadata.get('estimate', 0.0) for s in signals]
             # Update performance metrics
             duration = self.monitor.stop_timer("batch_processing")
             
@@ -659,18 +706,22 @@ class KalmanMeanReversion(BaseStrategy):
             spreads = self._internal_state.spread_history
             
             metrics = {
-                'total_observations': len(spreads),
+                'total_observations': self._internal_state.observation_count,
+                
                 'mean_spread': float(np.mean(spreads)),
                 'std_spread': float(np.std(spreads)),
                 'min_spread': float(np.min(spreads)),
                 'max_spread': float(np.max(spreads)),
                 'avg_zscore': float(self._internal_state.last_zscore),
-                'avg_latency_ms': self.monitor.get_avg_latency('kalman_update'),
+                
+                'avg_kalman_latency': self.monitor.get_avg_latency('kalman_update'),
+                'avg_batch_latency': self.monitor.get_avg_latency('batch_processing'),
+                'avg_live_latency': self.monitor.get_avg_latency('live_evaluation'),
+                
                 'filter_errors': self._internal_state.consecutive_errors,
                 'warmup_periods': self._warmup_count,
                 'signal_distribution': self._get_signal_distribution(),
-                'sharpe_ratio': self._calculate_sharpe_ratio()
-            }
+                'sharpe_ratio': self._calculate_sharpe_ratio()            }
         else:
             metrics = {
                 'total_observations': 0,
