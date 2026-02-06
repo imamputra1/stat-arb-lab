@@ -658,9 +658,67 @@ class FactoryManager:
     # Tidak perlu tulis ulang logic parsing di sini (DRY Principle)
     @staticmethod
     def create_strategy(raw_config: Dict[str, Any]) -> Result[BaseStrategy, str]:
-        """Delegate creation to the singleton factory instance"""
-        return FactoryManager().factory.create_from_raw(raw_config)
+        """
+        [THE ASSEMBLER]
+        Merakit object Strategy dari Raw Dictionary.
+        """
+        try:
+            # 1. Identifikasi Tipe Strategi
+            strat_type = raw_config.get("type")
+            if not strat_type:
+                # [FIX 2] Samakan pesan error persis dengan ekspektasi Test
+                return Err("Missing required field 'type' in configuration")
+            
+            # Cek di Registry
+            cls_result = StrategyRegistry.get_strategy_class(strat_type)
+            if cls_result.is_err():
+                return Err(f"Unknown strategy type: '{strat_type}'. Did you register it?")
+            
+            strategy_cls = cls_result.unwrap()
 
+            # 2. Rakit Signal Config (Generic)
+            factory = FactoryManager().factory
+            
+            # [FIX 1] INJECT NAME LOGIC
+            # Ambil 'signal_params', lalu suntikkan 'name' dari top-level config
+            sig_params = raw_config.get("signal_params", {}).copy()
+            
+            # Prioritas: Name di signal_params > Name di top-level > Default
+            if "name" not in sig_params:
+                sig_params["name"] = raw_config.get("name", f"Unnamed_{strat_type}")
+            
+            # Kirim ke parser (sekarang sudah bawa nama)
+            sig_result = factory.parser.parse_signal_config(sig_params)
+            if sig_result.is_err():
+                return Err(f"Signal Config Error: {sig_result.unwrap_err()}")
+            
+            sig_conf = sig_result.unwrap()
+
+            # 3. Rakit Math Config & Final Assembly
+            math_params = raw_config.get("math_params", {}).copy()
+            
+            try:
+                strat_enum = StrategyType.from_str(strat_type)
+            except ValueError:
+                 return Err(f"Invalid strategy type string: {strat_type}")
+
+            math_result = factory._parse_math_config(strat_enum, math_params)
+            if math_result.is_err():
+                return Err(f"Math Config Error: {math_result.unwrap_err()}")
+                
+            math_conf = math_result.unwrap()
+            
+            # 4. Final Instantiation
+            if StrategyRegistry.has_builder(strat_enum):
+                builder = StrategyRegistry.get_builder(strat_enum)
+                strategy = builder(math_conf, sig_conf)
+            else:
+                strategy = strategy_cls(math_conf, sig_conf)
+                
+            return Ok(strategy)
+
+        except Exception as e:
+            return Err(f"Factory failed to assemble strategy: {str(e)}")
     # [FIX] Method ini yang dicari-cari oleh Linter!
     @staticmethod
     def validate_config(raw_config: Dict[str, Any]) -> Result[Dict[str, Any], str]:
