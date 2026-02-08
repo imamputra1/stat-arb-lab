@@ -6,6 +6,15 @@ Desc: Standardized exceptions for execution subsystem.
 
 from typing import Optional
 
+try:
+    import orjson as json
+except ImportError:
+    import json
+    # Monkey patch agar interface mirip orjson (optional, tapi aman)
+    if not hasattr(json, "dumps_bytes"):
+        # orjson return bytes, json return str. Kita handle nanti jika perlu.
+        pass
+
 class ExecutionError(Exception):
     """Base class untuk semua error eksekusi"""
     def __init__(self, message: str, order_id: Optional[str] = None, code: str = "EXEC_ERR"):

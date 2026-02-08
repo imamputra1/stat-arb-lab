@@ -318,7 +318,7 @@ class Order(ImmutableBase):
     # Core fields (same as OrderRequest)
     symbol: Symbol
     side: OrderSide
-    order_type: OrderType
+    type: OrderType
     quantity: float
     price: Optional[float] = None
     time_in_force: TimeInForce = TimeInForce.GTC
