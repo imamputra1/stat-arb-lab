@@ -7,6 +7,7 @@ Desc: Komponen yang mengelola 'Barang' (Posisi) dan 'Uang' (Cash).
 
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
+from dataclasses import dataclass
 
 from core.shared.result import Result, Ok, Err
 from core.shared.utils import get_logger
@@ -20,6 +21,13 @@ from core.execution.types import (
 )
 
 logger = get_logger("oms.inventory")
+
+@dataclass
+class PortfolioSnapshot:
+    """Snapshot total portfolio pada satu titik waktu"""
+    timestamp: float
+    positions: List[Position]
+    total_realized_pnl: float
 
 class InventoryManager:
     """
@@ -39,15 +47,12 @@ class InventoryManager:
         
     # ========== READ OPERATIONS ==========
 
-    def get_position(self, symbol: Symbol) -> Position:
-        """Ambil posisi. Jika tidak ada, return posisi kosong (0)."""
-        if symbol not in self._positions:
-            return PositionFactory.create_empty(symbol, self.base_currency)
-        return self._positions[symbol]
+    def get_position(self, symbol: str) -> Position:
+        """Return posisi atau dummy kosong jika tidak ada"""
+        return self._positions.get(symbol, Position(symbol=symbol, quantity=0.0, average_entry_price=0.0))
 
     def get_all_positions(self) -> List[Position]:
-        """Ambil semua posisi yang terbuka (qty != 0)"""
-        return [p for p in self._positions.values() if p.is_open]
+        return list(self._positions.values())
 
     def get_cash_balance(self, currency: Optional[Currency] = None) -> float:
         """Ambil saldo cash"""
@@ -55,11 +60,10 @@ class InventoryManager:
         return self._cash_balances.get(tgt_curr, 0.0)
 
     def get_stats(self) -> Dict[str, Any]:
-        """Telemetri untuk monitoring"""
         return {
-            "total_positions": len(self.get_all_positions()),
-            "cash_balance": self._cash_balances.get(self.base_currency, 0.0),
-            "symbols": list(self._positions.keys())
+            "count": len(self._positions),
+            "base_currency": self.base_currency,
+            "exposure_symbols": list(self._positions.keys())
         }
 
     # ========== WRITE OPERATIONS (ATOMIC) ==========

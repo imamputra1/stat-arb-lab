@@ -97,18 +97,16 @@ class OrderSide(str, Enum):
 # ====================== ORDER STATUS (FIXED) ======================
 
 class OrderStatus(str, Enum):
-    """
-    Order lifecycle states with state machine logic.
-    """
-    PENDING = "PENDING"           # Sent but not yet acknowledged
-    ACKNOWLEDGED = "ACKNOWLEDGED" # Exchange acknowledged
-    OPEN = "OPEN"                 # In order book
+    PENDING = "PENDING"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    OPEN = "OPEN"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
     FILLED = "FILLED"
-    CANCELED = "CANCELED"
+    CANCELED = "CANCELLED"  # Konsisten dengan Types lama
     REJECTED = "REJECTED"
-    EXPIRED = "EXPIRED"           # For time-in-force orders
-    
+    EXPIRED = "EXPIRED"
+    NEW = "NEW" # Alias untuk PENDING di awal
+
     def can_transition_to(self, new_status: 'OrderStatus') -> bool:
         """Check if transition is valid using external mapping"""
         # [FIX] Ambil mapping dari variabel global di bawah class ini
@@ -136,30 +134,11 @@ class OrderStatus(str, Enum):
 # [FIX] Definisikan Mapping Transisi DI LUAR Class
 # Agar tidak terkena NameError saat runtime.
 _ORDER_STATUS_TRANSITIONS: Dict[OrderStatus, FrozenSet[OrderStatus]] = {
-    OrderStatus.PENDING: frozenset([
-        OrderStatus.ACKNOWLEDGED, 
-        OrderStatus.REJECTED,
-        OrderStatus.CANCELED  # Kadang bisa cancel sebelum ack
-    ]),
-    OrderStatus.ACKNOWLEDGED: frozenset([
-        OrderStatus.OPEN, 
-        OrderStatus.REJECTED, 
-        OrderStatus.CANCELED,
-        OrderStatus.FILLED  # Instant fill (Market Order)
-    ]),
-    OrderStatus.OPEN: frozenset([
-        OrderStatus.PARTIALLY_FILLED, 
-        OrderStatus.FILLED, 
-        OrderStatus.CANCELED, 
-        OrderStatus.EXPIRED,
-        OrderStatus.REJECTED # Rare case
-    ]),
-    OrderStatus.PARTIALLY_FILLED: frozenset([
-        OrderStatus.FILLED, 
-        OrderStatus.CANCELED, 
-        OrderStatus.EXPIRED
-    ]),
-    # Terminal states have no transitions
+    OrderStatus.NEW: frozenset([OrderStatus.PENDING, OrderStatus.ACKNOWLEDGED, OrderStatus.REJECTED]),
+    OrderStatus.PENDING: frozenset([OrderStatus.ACKNOWLEDGED, OrderStatus.REJECTED, OrderStatus.CANCELED]),
+    OrderStatus.ACKNOWLEDGED: frozenset([OrderStatus.OPEN, OrderStatus.REJECTED, OrderStatus.CANCELED, OrderStatus.FILLED]),
+    OrderStatus.OPEN: frozenset([OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.EXPIRED, OrderStatus.REJECTED]),
+    OrderStatus.PARTIALLY_FILLED: frozenset([OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.EXPIRED]),
     OrderStatus.FILLED: frozenset(),
     OrderStatus.CANCELED: frozenset(),
     OrderStatus.REJECTED: frozenset(),
@@ -251,36 +230,29 @@ class OrderRequest(ImmutableBase):
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     @classmethod
-    def create(
-        cls,
-        symbol: str,
-        side: OrderSide,
-        order_type: OrderType,
-        quantity: float,
-        price: Optional[float] = None,
-        **kwargs
-    ) -> Result['OrderRequest', ValidationError]: # [FIX] Gunakan string forward reference
-        """Factory method with comprehensive validation"""
+    def create(cls, symbol: str, side: OrderSide, order_type: OrderType, quantity: float, 
+               price: Optional[float] = None, time_in_force: TimeInForce = TimeInForce.GTC,
+               **kwargs) -> Result['OrderRequest', ValidationError]:
         
-        # Validate quantity
-        quantity_result = validate_positive(quantity, "quantity")
-        if is_err(quantity_result):
-            return quantity_result
+        qty_res = validate_positive(quantity, "quantity")
+        if is_err(qty_res): return qty_res
         
-        # Validate price based on order type
-        price_result = validate_price(price, order_type)
-        if is_err(price_result):
-            return price_result
-        
-        # Create the order
+        if order_type == OrderType.LIMIT and (price is None or price <= 0):
+            return Err(ValidationError("Limit order requires positive price"))
+            
         return Ok(cls(
             symbol=symbol.upper(),
             side=side,
             order_type=order_type,
-            quantity=quantity_result.unwrap(),
-            price=price_result.unwrap(),
+            quantity=qty_res.unwrap(),
+            price=price,
+            time_in_force=time_in_force,
             **kwargs
-        ))    
+        ))
+
+    def with_id(self, order_id: str) -> 'OrderRequest':
+        return replace(self, client_order_id=order_id)
+
     @cached_property
     def notional(self) -> Optional[float]:
         """Calculate order notional value"""
@@ -288,7 +260,7 @@ class OrderRequest(ImmutableBase):
             return self.quantity * self.price
         return None
     
-    @cached_property
+    @property
     def fingerprint(self) -> str:
         """Create a deterministic fingerprint for order matching"""
         components = [
@@ -407,96 +379,64 @@ class Order(ImmutableBase):
             updated_at=datetime.now(timezone.utc)
         )
     
-    def mark_acknowledged(
-        self, 
-        exchange_order_id: str,
-        timestamp: Optional[datetime] = None
-    ) -> Result[Self, ValidationError]:
-        """Mark order as acknowledged by exchange"""
-        return self.transition_to(OrderStatus.ACKNOWLEDGED).map(
-            lambda order: order.copy(
-                exchange_order_id=exchange_order_id,
-                acknowledged_at=timestamp or datetime.now(timezone.utc)
-            )
-        )
-    
-    def mark_open(self) -> Result[Self, ValidationError]:
-        """Mark order as open in order book"""
-        return self.transition_to(OrderStatus.OPEN)
-    
-    def add_fill(
-        self, 
-        fill_quantity: float, 
-        fill_price: float,
-        timestamp: Optional[datetime] = None
-    ) -> Result[Self, ValidationError]:
-        """Add a fill to the order"""
-        # Validate fill
-        if fill_quantity <= 0:
-            return Err(ValidationError(f"Fill quantity must be positive: {fill_quantity}"))
-        
-        if fill_price <= 0:
-            return Err(ValidationError(f"Fill price must be positive: {fill_price}"))
-        
-        if fill_quantity > self.remaining_quantity:
-            return Err(ValidationError(
-                f"Fill quantity {fill_quantity} exceeds remaining {self.remaining_quantity}"
-            ))
-        
-        # Calculate new values
-        new_filled = self.filled_quantity + fill_quantity
-        new_remaining = self.remaining_quantity - fill_quantity
-        
-        # Calculate weighted average price
-        total_value = (self.average_fill_price * self.filled_quantity + 
-                      fill_price * fill_quantity)
-        new_avg_price = total_value / new_filled if new_filled > 0 else 0.0
-        
-        # Determine new status
-        if new_remaining == 0:
-            new_status = OrderStatus.FILLED
-            completed_at = timestamp or datetime.now(timezone.utc)
-        elif self.status == OrderStatus.OPEN:
-            new_status = OrderStatus.PARTIALLY_FILLED
-            completed_at = None
-        else:
-            new_status = self.status
-            completed_at = None
-        
-        # First fill tracking
-        first_fill_at = self.first_fill_at or (timestamp or datetime.now(timezone.utc))
-        
-        return Ok(self.copy(
-            status=new_status,
-            filled_quantity=new_filled,
-            average_fill_price=new_avg_price,
-            remaining_quantity=new_remaining,
-            first_fill_at=first_fill_at,
-            completed_at=completed_at,
+    def mark_acknowledged(self, exchange_id: str) -> Result['Order', ValidationError]:
+        # Jika NEW, boleh transisi ke ACKNOWLEDGED atau PENDING dulu
+        return Ok(replace(self, 
+            status=OrderStatus.ACKNOWLEDGED, 
+            exchange_order_id=exchange_id, 
             updated_at=datetime.now(timezone.utc)
         ))
     
-    def mark_canceled(self) -> Result[Self, ValidationError]:
-        """Mark order as canceled"""
-        return self.transition_to(OrderStatus.CANCELED)
+    def mark_open(self) -> Result['Order', ValidationError]:
+        return Ok(replace(self, status=OrderStatus.OPEN, updated_at=datetime.now(timezone.utc)))
+
+    def add_fill(self, fill_qty: float, fill_price: float) -> Result['Order', ValidationError]:
+        if self.is_terminal:
+            return Err(ValidationError(f"Cannot fill terminal order: {self.status}"))
+            
+        new_filled = self.filled_quantity + fill_qty
+        
+        current_notional = self.filled_quantity * self.average_fill_price
+        fill_notional = fill_qty * fill_price
+        new_avg_price = (current_notional + fill_notional) / new_filled if new_filled > 0 else 0.0
+        
+        new_status = OrderStatus.FILLED if new_filled >= self.quantity * 0.9999 else OrderStatus.PARTIALLY_FILLED
+        completed_at = datetime.now(timezone.utc) if new_status == OrderStatus.FILLED else None
+        
+        return Ok(replace(self,
+            status=new_status,
+            filled_quantity=new_filled,
+            average_fill_price=new_avg_price,
+            updated_at=datetime.now(timezone.utc),
+            completed_at=completed_at,
+            first_fill_at=self.first_fill_at or datetime.now(timezone.utc)
+        ))
+
+
+    def mark_canceled(self) -> Result['Order', ValidationError]:
+        return Ok(replace(self, 
+            status=OrderStatus.CANCELED, 
+            completed_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc)
+        ))
     
-    def mark_rejected(self, error_code: str, error_message: str) -> Result[Self, ValidationError]:
-        """Mark order as rejected"""
-        return self.transition_to(OrderStatus.REJECTED).map(
-            lambda order: order.copy(
-                error_code=error_code,
-                error_message=error_message
-            )
-        )
+    def mark_rejected(self, code: str, reason: str) -> Result['Order', ValidationError]:
+        return Ok(replace(self, 
+            status=OrderStatus.REJECTED, 
+            error_code=code, 
+            error_message=reason, 
+            completed_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc)
+        ))
     
     # ========== QUERY METHODS ==========
     
-    @cached_property
+    @property
     def is_active(self) -> bool:
         """Check if order is still active"""
         return self.status.is_active()
     
-    @cached_property
+    @property
     def is_terminal(self) -> bool:
         """Check if order is in terminal state"""
         return self.status.is_terminal()
@@ -622,7 +562,7 @@ class TradeFill(ImmutableBase):
             )
         )    
 
-    @cached_property
+    @property
     def notional(self) -> float:
         """Total notional value of the fill"""
         return self.quantity * self.price
@@ -644,6 +584,7 @@ class TradeFill(ImmutableBase):
         WARNING: Ini adalah RAW value dalam 'fee_currency', bukan USD.
         """
         return self.fee
+Fill = TradeFill
 
 # ====================== EXECUTION REPORT ======================
 
@@ -672,51 +613,44 @@ class ExecutionReport(ImmutableBase):
     
     # Timestamps
     report_timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    error_message: Optional[str] = None
+
+    # Delegated Properties
+    @property
+    def status(self) -> OrderStatus: return self.order.status
+    @property
+    def order_id(self) -> str: return self.order.order_id
+    @property
+    def symbol(self) -> str: return self.order.symbol
+    @property
+    def side(self) -> OrderSide: return self.order.side
+    @property
+    def avg_price(self) -> float: return self.order.average_fill_price
+    @property
+    def filled_quantity(self) -> float: return self.order.filled_quantity
     
     @classmethod
-    def from_order_and_fills(
-        cls, 
-        order: Order, 
-        fills: List[TradeFill]
-    ) -> Self:
-        """Create execution report from order and its fills"""
+    def from_order_and_fills(cls, order: Order, fills: List[TradeFill]) -> 'ExecutionReport':
         fills_tuple = tuple(fills)
+        total_notional = sum(f.notional for f in fills_tuple)
         
-        # Calculate aggregated metrics
-        total_notional = sum(fill.notional for fill in fills_tuple)
-        
-        # [FIX] Calculate Total Fees per Currency
-        # Jangan pakai fee_notional (sudah dihapus), pakai fill.fee & fill.fee_currency
         fees_map = {}
-        for fill in fills_tuple:
-            curr = fill.fee_currency
-            fees_map[curr] = fees_map.get(curr, 0.0) + fill.fee
-        
-        # Calculate VWAP
-        total_quantity = sum(fill.quantity for fill in fills_tuple)
-        vwap = total_notional / total_quantity if total_quantity > 0 else 0.0
-        
-        # Calculate average slippage
-        slippages = [f.slippage_bps for f in fills_tuple if f.slippage_bps is not None]
-        avg_slippage = sum(slippages) / len(slippages) if slippages else None
-        
-        # Calculate average latency
-        latencies = [f.latency_ms for f in fills_tuple if f.latency_ms is not None]
-        avg_latency = sum(latencies) / len(latencies) if latencies else None
-        
+        for f in fills_tuple:
+            fees_map[f.fee_currency] = fees_map.get(f.fee_currency, 0.0) + f.fee
+            
         return cls(
             order=order,
             fills=fills_tuple,
-            total_notional=total_notional,
-            total_fees=fees_map, # [FIX] Inject dictionary
-            vwap_execution=vwap,
-            avg_slippage_bps=avg_slippage,
-            avg_latency_ms=avg_latency,
             is_complete=order.is_terminal,
+            total_notional=total_notional,
+            total_fees=fees_map,
+            vwap_execution=order.average_fill_price,
             completion_reason=order.status.value if order.is_terminal else None
         )
+
     
-    @cached_property
+    @property
     def net_notional(self) -> float:
         """
         [UPGRADED] Total notional after fees.
@@ -737,7 +671,7 @@ class ExecutionReport(ImmutableBase):
         
         return self.total_notional - relevant_fee
 
-    @cached_property
+    @property
     def effective_price(self) -> float:
         """
         [UPGRADED] Effective price paid/received (including relevant fees).
@@ -751,7 +685,7 @@ class ExecutionReport(ImmutableBase):
             
         return 0.0
 
-    @cached_property
+    @property
     def fee_rate_bps(self) -> float:
         """
         [UPGRADED] Average fee rate in basis points.
@@ -782,6 +716,7 @@ class Position:
     symbol: Symbol
     quantity: float = 0.0          # Net Position (+Long, -Short)
     average_entry_price: float = 0.0
+    current_price: float = 0.0
     
     # PnL State
     realized_pnl: float = 0.0      # Uang yang sudah dikunci (Closed)
@@ -1040,6 +975,7 @@ __all__ = [
     
     # Factory
     'OrderFactory',
+    'Fill',
     
     # Protocols
     'Executable',
