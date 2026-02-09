@@ -47,7 +47,7 @@ __all__ = [
     #New
     "Status",
     "AsyncResult",
-    "PerformanceMonitor"
+    "PerformanceMonitor",
 
     "get_logger"
 ]

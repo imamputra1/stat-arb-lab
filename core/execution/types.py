@@ -372,7 +372,7 @@ class Order(ImmutableBase):
         return cls(
             symbol=request.symbol,
             side=request.side,
-            order_type=request.order_type,
+            type=request.order_type,
             quantity=request.quantity,
             price=request.price,
             time_in_force=request.time_in_force,
@@ -770,6 +770,74 @@ class ExecutionReport(ImmutableBase):
         
         # Rumus: (Fee / Notional) * 10000
         return (relevant_fee / self.total_notional) * 10000
+
+# ====================== INVENTORY STATE (POSITION) ======================
+
+@dataclass(frozen=True)
+class Position:
+    """
+    Representasi Atomic dari Inventory Trading.
+    Immutable: Setiap update (trade baru/harga berubah) menghasilkan object baru.
+    """
+    symbol: Symbol
+    quantity: float = 0.0          # Net Position (+Long, -Short)
+    average_entry_price: float = 0.0
+    
+    # PnL State
+    realized_pnl: float = 0.0      # Uang yang sudah dikunci (Closed)
+    unrealized_pnl: float = 0.0    # Floating PnL (Mark-to-Market)
+    max_drawdown: float = 0.0      # Track worst unrealized PnL seen
+    
+    # Metadata
+    currency: Currency = "USDT"
+    last_update_at: float = field(default_factory=lambda: datetime.now(timezone.utc).timestamp())
+    
+    @property
+    def is_open(self) -> bool:
+        """Apakah posisi aktif? (Gunakan epsilon untuk float safety)"""
+        return abs(self.quantity) > 1e-9
+
+    @property
+    def side(self) -> Optional[OrderSide]:
+        """Arah posisi saat ini"""
+        if abs(self.quantity) < 1e-9:
+            return None
+        return OrderSide.BUY if self.quantity > 0 else OrderSide.SELL
+        
+    @property
+    def market_value(self) -> float:
+        """Nilai nosional posisi di harga entry"""
+        return abs(self.quantity * self.average_entry_price)
+
+    def mark_to_market(self, current_price: float) -> 'Position':
+        """
+        Pure Function: Menghitung Unrealized PnL baru berdasarkan harga pasar.
+        Returns: Instance Position BARU dengan nilai terupdate.
+        """
+        if not self.is_open:
+            return self.copy(unrealized_pnl=0.0)
+            
+        # Rumus Universal PnL: (Harga Sekarang - Harga Entry) * Quantity
+        # Long (+Qty): Harga naik -> PnL Positif
+        # Short (-Qty): Harga naik -> PnL Negatif (karena Qty minus)
+        diff = current_price - self.average_entry_price
+        new_unrealized = diff * self.quantity
+        
+        # Track Drawdown
+        new_drawdown = min(self.max_drawdown, new_unrealized) if new_unrealized < 0 else self.max_drawdown
+
+        return replace(
+            self,
+            unrealized_pnl=new_unrealized,
+            max_drawdown=new_drawdown,
+            last_update_at=datetime.now(timezone.utc).timestamp()
+        )
+    
+    def copy(self, **changes) -> 'Position':
+        """Helper untuk immutability"""
+        return replace(self, **changes)
+
+
 # ====================== FACTORY FUNCTIONS ======================
 
 class OrderFactory:
@@ -847,6 +915,34 @@ class OrderFactory:
             price=limit_price,
             **kwargs
         )
+
+
+class PositionFactory:
+    """
+    Factory untuk pembuatan Posisi dengan aman.
+    """
+    
+    @staticmethod
+    def create_empty(symbol: str, currency: str = "USDT") -> Position:
+        """Membuat posisi kosong (inisialisasi)"""
+        return Position(symbol=symbol, currency=currency)
+
+    @staticmethod
+    def from_snapshot(data: Dict[str, Any]) -> Result[Position, str]:
+        """Rehydrate posisi dari database/redis (Recovery Mode)"""
+        try:
+            return Ok(Position(
+                symbol=data['symbol'],
+                quantity=float(data['quantity']),
+                average_entry_price=float(data['average_entry_price']),
+                realized_pnl=float(data.get('realized_pnl', 0.0)),
+                unrealized_pnl=float(data.get('unrealized_pnl', 0.0)),
+                currency=data.get('currency', 'USDT')
+            ))
+        except KeyError as e:
+            return Err(f"Position snapshot missing field: {str(e)}")
+        except ValueError as e:
+            return Err(f"Invalid data type in snapshot: {str(e)}")
 
 # ====================== PROTOCOLS ======================
 
@@ -953,3 +1049,5 @@ __all__ = [
     'FillResult',
     'ExecutionReportResult' 
 ]
+
+__all__.extend(['Position', 'PositionFactory'])
