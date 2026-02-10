@@ -70,33 +70,82 @@ class KalmanMeanReversion(BaseStrategy):
     """
     
     def __init__(self,
-                 math_config: KalmanConfig,
-                 signal_config: SignalConfig):
+                 signal_config: SignalConfig,           # [1] Geser ke depan (Wajib ada untuk Identity)
+                 math_config: Optional[KalmanConfig] = None): # [2] Jadikan Optional (Support DI)
         """
         Initialize Motherboard dengan StrategyConfig yang terintegrasi.
+        Supports Dependency Injection: Math parameters bisa null (akan pakai default).
         
         Args:
-            config: StrategyConfig yang sudah terintegrasi Kalman + Signal params
+            signal_config: Logic parameters (Thresholds, Sizing)
+            math_config: Math parameters (R, Q). Optional.
         """
+        # [3] Init Base Strategy pakai data dari SignalConfig (Name & Version)
         super().__init__(name=signal_config.name, version=signal_config.version)
         
-        self.math_config = math_config
         self.sig_config = signal_config
 
-        # State management
+        # [4] Handle Math Config: Pakai inputan user ATAU Default aman
+        if math_config:
+            self.math_config = math_config
+        else:
+            # Default Safe Values (Industrial Standard)
+            # Mencegah crash jika Factory lupa inject math params
+            self.math_config = KalmanConfig(
+                R=0.1, 
+                Q=1e-5, 
+                initial_value=0.0,
+                adaptation_mode=None # Akan default ke NIS di internal Kalman
+            )
+
+        # [5] State management (TETAP SAMA - JANGAN UBAH)
         self._internal_state = KalmanMRState()
         self._kalman_filter: Optional[AdaptiveKalmanFilter] = None
         self._filter_initialized = False
         
         self._warmup_count = 0
         
-        # Validasi konfigurasi
+        # [6] Validasi konfigurasi (TETAP SAMA)
         validation = self.sig_config.validate()
         if validation.is_err():
             raise ValueError(f"Invalid signal config: {validation.unwrap_err()}")
         
         logger.info(f"Initialized KalmanMRStrategy: {self.name} v{self.version}")
     
+
+    def update_math_params(self, math_config: KalmanConfig) -> None:
+        """
+        [DEPENDENCY INJECTION]
+        Dipanggil oleh Factory untuk menyuntikkan/mengupdate parameter Math (R, Q).
+        
+        Effect:
+        - Mengganti konfigurasi matematika.
+        - ME-RESET filter dan buffer history (Hard Reset) untuk mencegah
+          kontaminasi state lama ke parameter baru.
+        """
+        logger.info(f"Injecting Math Kernel: R={math_config.R}, Q={math_config.Q}, Mode={math_config.adaptation_mode}")
+        
+        # 1. Update Config
+        self.math_config = math_config
+        
+        # 2. Hard Reset Math Kernel
+        # Kita hancurkan filter lama agar filter baru dibangun ulang (Lazy Init) 
+        # pada saat _process_observation berikutnya dipanggil.
+        self._kalman_filter = None
+        self._filter_initialized = False
+        
+        # 3. Reset Buffer & Metrics
+        # Data history lama tidak relevan lagi dengan model matematika baru
+        # Kita bersihkan agar kalkulasi Z-Score mulai dari nol (Fresh Start)
+        self._internal_state.spread_history.clear()
+        self._internal_state.consecutive_errors = 0
+        
+        # Reset estimasi ke default aman
+        self._internal_state.current_estimate = 0.0
+        self._internal_state.current_uncertainty = 1.0
+        
+        logger.info("Math Kernel & Internal State reset complete.")
+
     # ========== ABSTRACT METHOD IMPLEMENTATIONS ==========
     
     def _initialize_filter(self, initial_value: float) -> Result[AdaptiveKalmanFilter, str]:
@@ -316,70 +365,84 @@ class KalmanMeanReversion(BaseStrategy):
         return spread
 
     # ========== SIGNAL GENERATION LOGIC ==========
-    
     def _generate_signal_from_state(
         self, 
         state: KalmanState, 
         spread: float, 
         timestamp: int
     ) -> Result[SignalEvent, str]:
-        """[DECISION MATRIX]"""
+        """[DECISION MATRIX - UPGRADED]"""
         try:
+            # 1. Extract State
+            # Mengambil estimasi spread wajar dari Kalman Filter
             estimate = float(state.x[0, 0])
             uncertainty = float(state.P[0, 0])
+            
+            # Hitung Residual (Spread Aktual - Spread Wajar)
+            # Inilah "Noise" yang kita tradingkan dalam Mean Reversion
             residual = spread - estimate
             
+            # 2. Update Rolling History
             self._internal_state.spread_history.append(residual)
             
-            # [FIX] Ganti self.config -> self.sig_config (pastikan ada di SignalConfig)
-            # Jika rolling_window tidak ada di config, hardcode atau tambahkan ke SignalConfig
-            WINDOW_SIZE = 50 # Atau self.sig_config.volatility_window
-            if len(self._internal_state.spread_history) > WINDOW_SIZE:
+            # [UPGRADE] Dynamic Window Size dari Config
+            # Tidak lagi hardcoded 50. Bisa diatur via live/config.py
+            window_size = self.sig_config.volatility_window
+            
+            # Jaga buffer tetap seukuran window
+            if len(self._internal_state.spread_history) > window_size:
                 self._internal_state.spread_history.pop(0)
             
-            # [FIX] Warmup check
-            MIN_SAMPLES = 20
-            if len(self._internal_state.spread_history) < MIN_SAMPLES:
+            # [UPGRADE] Dynamic Warmup Logic
+            # Minimal data setengah window sebelum mulai trading
+            # Misal window=50, butuh 25 data. Window=20, butuh 10.
+            min_samples = max(10, int(window_size / 2))
+            
+            if len(self._internal_state.spread_history) < min_samples:
                 self._warmup_count += 1
                 return Ok(SignalEvent(
                     timestamp=timestamp, 
                     signal_type=SignalType.NEUTRAL, 
                     strength=0.0,
-                    metadata={"status": "warmup"}
+                    symbol=self._internal_state.price_pair[0] if self._internal_state.price_pair else "UNKNOWN",
+                    _metadata={
+                        "status": "warmup", 
+                        "samples": len(self._internal_state.spread_history),
+                        "required": min_samples
+                    }
                 ))
             
-            # Z-Score Calculation
+            # 3. Z-Score Calculation (Standard Score)
+            # Volatility = Standard Deviation dari Residual History
             volatility = np.std(self._internal_state.spread_history)
-            if volatility < 1e-9: volatility = 1e-9
+            
+            # Safety check: cegah pembagian dengan nol (jika market flat total)
+            if volatility < 1e-9: 
+                volatility = 1e-9
             
             zscore = residual / volatility
             
-            # Update Internal State
-            self._internal_state.last_zscore = zscore
-            self._internal_state.current_estimate = estimate
-            self._internal_state.current_uncertainty = uncertainty
+            # 4. Generate Signal
+            # Logic penentuan signal (Buy/Sell/Exit) dipisah agar rapi
+            signal_type, strength = self._determine_signal(zscore)
             
-            # Generate Signal
-            signal_type, strength = self._determine_signal(zscore)            
-            # Build metadata
-            metadata = {
-                "estimate": estimate,
-                "uncertainty": uncertainty,
-                "zscore": zscore,
-                "spread": spread,
-                "volatility": volatility,
-                "residual": residual,
-                "position_size": self._internal_state.position_size,
-                "trade_count": self._internal_state.trade_count,
-                "warmup_complete": True,
-                "price_pair": self._internal_state.price_pair
-            }
-            
+            # 5. Build Result
             return Ok(SignalEvent(
                 timestamp=timestamp,
-                signal_type=signal_type, #
-                strength=strength,
-                metadata=metadata # (variable 'metadata' must be defined before use)
+                signal_type=signal_type,
+                strength=strength, # Menggunakan Z-Score sebagai ukuran kekuatan sinyal
+                symbol=self._internal_state.price_pair[0], # Asset Y (DOGE)
+                strategy_name=self.sig_config.name,
+                _metadata={
+                    "zscore": float(zscore),
+                    "spread": float(spread),
+                    "estimate": float(estimate),
+                    "volatility": float(volatility),
+                    "residual": float(residual),
+                    "window_size": window_size,
+                    # Debug Info: Memastikan parameter math benar-benar ter-inject
+                    "kalman_R": self.math_config.R 
+                }
             ))
             
         except Exception as e:

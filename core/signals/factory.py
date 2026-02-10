@@ -28,11 +28,13 @@ from core.shared.result import (
 from core.signals.base_signal import BaseStrategy 
 from core.signals.types import SignalConfig
 
-# Import available strategies
-from core.signals.strategies.kalman_mr import KalmanMeanReversion
-
 # Import math configurations
 from core.math.kalman import KalmanConfig, AdaptationMode
+
+try:
+    from .strategies.kalman_mr import KalmanMeanReversion
+except ImportError:
+    KalmanMRStrategy = None
 
 # ====================== TYPES & INTERFACES ======================
 
@@ -181,137 +183,58 @@ class ConfigParser:
     @staticmethod
     def parse_signal_config(raw_signal: Dict[str, Any]) -> Result[SignalConfig, str]:
         """
-        Parse raw dictionary to SignalConfig with validation.
-        Hanya mengurusi Parameter Sinyal (Alpha). 
-        Urusan Risk Management (Drawdown, Fee) ada di module terpisah.
+        [UPGRADE] Menggunakan SignalConfig.from_dict() sebagai Single Source of Truth.
+        Tidak ada lagi manual mapping di sini.
         """
-        try:
-            # 1. Extract Identity
-            name = raw_signal.get('name', 'Unnamed_Strategy')
-            
-            # 2. Mapping Key: "Istilah Manusia" -> "Istilah Sistem (types.py)"
-            # Ini memungkinkan config file pake istilah 'entry_threshold' 
-            # tapi sistem tetap baca sebagai 'entry_z_score'.
-            field_mapping = {
-                # --- THRESHOLDS (Logic Alpha) ---
-                'entry_z_score': 'entry_z_score',  
-                'entry_threshold': 'entry_z_score', # Alias umum
-                
-                'exit_z_score': 'exit_z_score',
-                'exit_threshold': 'exit_z_score',   # Alias umum
-                
-                'stop_loss_z': 'stop_loss_z',
-                'stop_loss': 'stop_loss_z',         # Alias umum
-                
-                # --- POSITIONING (Sizing Dasar) ---
-                'max_position': 'max_position',
-                'hedge_ratio': 'hedge_ratio',       # Vital untuk Pair Trading
-                
-                # --- METADATA ---
-                'version': 'version'
-            }
-            
-            # 3. Build Config Dictionary
-            config_data = {'name': name}
-            
-            for raw_key, cls_key in field_mapping.items():
-                if raw_key in raw_signal:
-                    try:
-                        val = raw_signal[raw_key]
-                        
-                        # Type Casting (Safety)
-                        # Kecuali version (string), sisanya float
-                        if cls_key != 'version':
-                            val = float(val)
-                            
-                        config_data[cls_key] = val
-                        
-                    except (ValueError, TypeError) as e:
-                        return Err(f"Invalid value for parameter '{raw_key}': {e}")
-
-            # 4. Create Object (Fail Fast jika ada field wajib yang hilang)
-            # SignalConfig ada di core.signals.types
-            try:
-                # Filter hanya argumen yang dikenal oleh SignalConfig
-                # (Mencegah error jika config file punya key sampah)
-                valid_fields = {f.name for f in fields(SignalConfig)}
-                filtered_data = {k: v for k, v in config_data.items() if k in valid_fields}
-                
-                signal_config = SignalConfig(**filtered_data)
-                
-            except TypeError as e:
-                return Err(f"SignalConfig creation failed. Missing required fields? Error: {e}")
-            
-            # 5. Logic Validation (Entry harus > Exit, dll)
-            validation_result = signal_config.validate()
-            if validation_result.is_err():
-                return validation_result
-            
-            return Ok(signal_config)
-            
-        except Exception as e:
-            return Err(f"Parser crash: {str(e)}")
+        # Delegasikan sepenuhnya ke method factory milik Class SignalConfig
+        return SignalConfig.from_dict(raw_signal)
 
     @staticmethod
     def parse_kalman_config(raw_math: Dict[str, Any]) -> Result[KalmanConfig, str]:
         """
         Parse raw dictionary to KalmanConfig.
-        
-        Args:
-            raw_math: Raw math parameters for Kalman filter
-            
-        Returns:
-            Result[KalmanConfig, str]
+        Handles complex types like Enum conversion.
         """
         try:
-            # Required parameters with validation
-            required_params = ['R', 'Q', 'initial_value']
-            for param in required_params:
-                if param not in raw_math:
-                    return Err(f"Missing required parameter: {param}")
-            
-            # Prepare config data
-            config_data = {
-                'R': float(raw_math['R']),
-                'Q': float(raw_math['Q']),
-                'initial_value': float(raw_math['initial_value']),
-            }
-            
-            # Optional parameters with defaults
-            optional_params = {
-                'state_dim': 2,
-                'shock_threshold': 4.0,
-                'max_boost_factor': 10.0,
-                'min_lambda': 0.8,
-                'max_lambda': 1.0,
-            }
-            
-            for key, default in optional_params.items():
-                config_data[key] = float(raw_math.get(key, default))
-            
-            # Parse adaptation mode
-            adapt_mode_str = raw_math.get('adaptation_mode', 'nis')
+            # 1. Validasi Required Params
+            required = ['R', 'Q']
+            for req in required:
+                if req not in raw_math:
+                    return Err(f"Missing Kalman Parameter: {req}")
+
+            # 2. Handle Adaptation Mode (String -> Enum)
+            mode_str = raw_math.get('adaptation_mode', 'nis')
             try:
-                adapt_mode = AdaptationMode(adapt_mode_str.lower())
-                config_data['adaptation_mode'] = adapt_mode
+                # Support 'NIS', 'nis', atau value langsung
+                if isinstance(mode_str, str):
+                    mode = AdaptationMode(mode_str.lower())
+                elif isinstance(mode_str, AdaptationMode):
+                    mode = mode_str
+                else:
+                    mode = AdaptationMode.NIS_THRESHOLD
             except ValueError:
-                return Err(f"Invalid adaptation mode: {adapt_mode_str}")
+                return Err(f"Invalid adaptation_mode: {mode_str}. Use 'nis' or 'ml'.")
+
+            # 3. Create Config Object
+            # Menggunakan float() untuk safety casting
+            config = KalmanConfig(
+                R=float(raw_math['R']),
+                Q=float(raw_math['Q']),
+                initial_value=float(raw_math.get('initial_value', 0.0)),
+                adaptation_mode=mode,
+                # Optional params dengan default dari class definition
+                state_dim=int(raw_math.get('state_dim', 2))
+            )
             
-            # Create KalmanConfig
-            kalman_config = KalmanConfig(**config_data)
-            
-            # Validate numeric ranges
-            if kalman_config.R <= 0 or kalman_config.Q <= 0:
-                return Err("R and Q must be positive")
-            
-            if not (0 < kalman_config.min_lambda <= kalman_config.max_lambda <= 1):
-                return Err("Lambda values must be between 0 and 1")
-            
-            return Ok(kalman_config)
+            return Ok(config)
             
         except Exception as e:
-            return Err(f"Failed to parse Kalman config: {str(e)}")
-    
+            return Err(f"Failed to parse KalmanConfig: {str(e)}")
+            
+    # [OPTIONAL] parse_generic_config bisa dihapus jika tidak dipakai
+    # untuk menjaga kode tetap ramping.
+
+
     @staticmethod
     def parse_generic_config(raw_config: Dict[str, Any], config_type: Type) -> Result[Any, str]:
         """
@@ -433,67 +356,68 @@ class SignalFactory:
             
         except Exception as e:
             return Err(f"Assembly failed: {str(e)}")
-    
+
+
     def create_from_raw(self, raw_config: Dict[str, Any]) -> Result[BaseStrategy, str]:
         """
-        Create strategy from raw configuration dictionary.
-        
-        Expected structure:
-        {
-            "type": "kalman_mr",
-            "name": "StrategyName",
-            "signal_params": { ... },
-            "math_params": { ... },
-            "metadata": { ... }
-        }
-        
-        Args:
-            raw_config: Raw configuration dictionary
-            
-        Returns:
-            Result[BaseStrategy, str]
+        Create strategy from Raw Config (e.g. from live/config.py).
         """
         try:
-            # Extract configuration parts
-            strategy_type_str = raw_config.get('type')
-            if not strategy_type_str:
-                return Err("Missing 'type' in configuration")
+            # 1. Determine Type
+            type_str = raw_config.get('type')
+            if not type_str:
+                return Err("Config missing 'type'")
             
-            # Parse strategy type
             try:
-                strategy_type = StrategyType.from_str(strategy_type_str)
+                strat_type = StrategyType.from_str(type_str)
             except ValueError as e:
                 return Err(str(e))
+
+            # 2. Parse SIGNAL Config (Alpha Logic)
+            # [FIX] Ambil 'signal_params' TAPI inject 'name' dari root config jika belum ada
+            raw_sig = raw_config.get('signal_params', {}).copy()
             
-            # Parse signal configuration
-            raw_signal = raw_config.get('signal_params', {})
-            signal_config_result = self.parser.parse_signal_config(raw_signal)
-            if signal_config_result.is_err():
-                return signal_config_result.map(lambda _: None)
+            # PENTING: Cek apakah 'name' ada di root config (raw_config)
+            # Jika ada, paksa masuk ke dalam raw_sig agar terbaca oleh SignalConfig
+            if 'name' not in raw_sig:
+                root_name = raw_config.get('name')
+                if root_name:
+                    raw_sig['name'] = root_name
+                else:
+                    raw_sig['name'] = f"Unnamed_{type_str}"
+
+            # Sekarang panggil parser dengan dictionary yang SUDAH punya 'name'
+            sig_res = self.parser.parse_signal_config(raw_sig)
             
-            signal_config = signal_config_result.unwrap()
+            if sig_res.is_err():
+                return Err(f"Signal Config Error: {sig_res.unwrap_err()}")
+            signal_config = sig_res.unwrap()
+
+            # 3. Parse MATH Config (Engine Logic)
+            math_type = StrategyRegistry.get_math_config_type(strat_type)
+            math_config = None
             
-            # Parse math configuration based on strategy type
-            raw_math = raw_config.get('math_params', {})
-            math_config_result = self._parse_math_config(strategy_type, raw_math)
-            if math_config_result.is_err():
-                return math_config_result.map(lambda _: None)
-            
-            math_config = math_config_result.unwrap()
-            
-            # Create assembly spec
+            if math_type == KalmanConfig:
+                math_res = self.parser.parse_kalman_config(raw_config.get('math_params', {}))
+                if math_res.is_err():
+                    return Err(f"Math Config Error: {math_res.unwrap_err()}")
+                math_config = math_res.unwrap()
+
+            # 4. Assembly Spec
             spec = AssemblySpec(
-                strategy_type=strategy_type,
+                strategy_type=strat_type,
                 signal_config=signal_config,
                 math_config=math_config,
                 metadata=raw_config.get('metadata', {})
             )
-            
-            # Assemble strategy
+
+            # 5. Build
             return self.create_from_spec(spec)
-            
+
         except Exception as e:
-            return Err(f"Failed to create strategy from raw config: {str(e)}")
+            return Err(f"Factory creation failed: {str(e)}")    
+
+
 
     def validate_config(self, raw_config: Dict[str, Any]) -> Result[Dict[str, Any], str]:
         """
@@ -614,14 +538,16 @@ class SignalFactory:
 
 # ====================== BUILDER FUNCTIONS ======================
 
-def build_kalman_mean_reversion(math_config: KalmanConfig, signal_config: SignalConfig) -> KalmanMeanReversion:
-    """
-    Custom builder for Kalman Mean Reversion strategy.
-    Allows for custom initialization logic.
-    """
-    return KalmanMeanReversion(math_config, signal_config)
+def build_kalman_mean_reversion(math_config: KalmanConfig, signal_config: SignalConfig) -> BaseStrategy:
+    if not KalmanMeanReversion:
+        raise ImportError("KalmanMeanReversion strategy not available")
 
-# ====================== FACTORY MANAGER (SINGLETON) ======================
+    strategy = KalmanMeanReversion(signal_config)
+    
+    if math_config:
+        strategy.update_math_params(math_config)
+
+    return strategy# ====================== FACTORY MANAGER (SINGLETON) ======================
 
 class FactoryManager:
     """
@@ -734,11 +660,13 @@ def get_factory() -> SignalFactory:
 
 def create_strategy(raw_config: Dict[str, Any]) -> Result[BaseStrategy, str]:
     """Quick function to create strategy from raw config"""
-    return FactoryManager().create_strategy(raw_config)
+    # Fix: Panggil via .factory.create_from_raw
+    return FactoryManager().factory.create_from_raw(raw_config)
 
 def validate_config(raw_config: Dict[str, Any]) -> Result[Dict[str, Any], str]:
     """Quick function to validate configuration"""
-    return FactoryManager().validate_config(raw_config)
+    # Fix: Panggil via .factory.validate_config
+    return FactoryManager().factory.validate_config(raw_config)
 
 def list_available_strategies() -> Dict[str, str]:
     """List all registered strategies"""

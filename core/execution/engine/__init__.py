@@ -6,7 +6,7 @@ Desc: Entry point utama. Merakit Mechanics, Emulator, dan Wrapper menjadi satu s
 
 from typing import Optional, Dict, Any
 from dataclasses import dataclass
-
+from .adapter import EmulatorAdapter
 # 1. Import Core Components
 from .types import (
     Trade,
@@ -97,5 +97,6 @@ __all__ = [
     'MarketContext',
     'MarketRegime',
     'EngineConfig',
-    'create_execution_engine'
+    'create_execution_engine',
+    'EmulatorAdapter'
 ]

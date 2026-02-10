@@ -13,19 +13,21 @@ from .types import (
     MarketObservation
 )
 
-# 2. Factory & Assembly Line (New)
-# Kita expose class utama dan fungsi pintas (quick access)
+# 2. Factory & Assembly Line
 from .factory import (
     SignalFactory,
     FactoryManager,
     StrategyRegistry,
     ConfigParser,
-    create_strategy,   # <-- Helper instan
-    validate_config,   # <-- Helper instan
-    get_factory        # <-- Singleton Access
+    create_strategy,
+    validate_config,
+    get_factory
 )
 
-# 3. Public Export List
+# 3. Facade (THE MISSING PIECE)
+from .facade import SignalGeneratorFacade
+
+# 4. Public Export List
 __all__ = [
     # Base
     'BaseStrategy',
@@ -45,5 +47,8 @@ __all__ = [
     # Quick Access Functions
     'create_strategy',
     'validate_config',
-    'get_factory'
+    'get_factory',
+
+    # Facade
+    'SignalGeneratorFacade'
 ]
