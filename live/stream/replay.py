@@ -1,16 +1,21 @@
 """
-REPLAY STREAMER (With Industrial Aggregator)
+PURE REPLAY STREAMER
 Location: live/stream/replay.py
-Desc: Menyuapkan data Loader ke Aggregator untuk menghasilkan Candle valid.
-      Pipeline: DataFrame -> MarketTick -> CandleAggregator -> Candle -> MarketObservation
+Desc: Pemutar data historis murni yang patuh pada Protocol Aggregator.
+      Pipeline: Parquet -> Raw Tick -> Aggregator -> Candle -> MarketObservation.
 """
 
 import time
 import logging
 from typing import Generator, Dict, Any
 
-# Core Imports
-from core.data import ParquetLoader, ChaosMonkey, create_market_tick, create_candle_aggregator
+# Core Imports (Facade)
+from core.data import (
+    ParquetLoader, 
+    create_market_tick, 
+    create_candle_aggregator,
+    DataSource
+)
 from core.signals.types import MarketObservation
 
 # Setup Logger
@@ -18,8 +23,9 @@ logger = logging.getLogger("Orca.Stream.Replay")
 
 class ReplayStreamer:
     """
-    Virtual Exchange yang menggunakan Aggregator Asli (core/data/aggregators.py).
-    Ini menjamin logika simulasi 100% sama dengan logika Live Trading.
+    Simulasi Exchange + Aggregator.
+    Membaca data mentah, mengubahnya menjadi tick, lalu mengagregasikannya menjadi candle
+    sebelum dikirim ke Engine.
     """
     
     def __init__(self, scenario_config: Dict[str, Any], data_path: str = "data/raw"):
@@ -27,11 +33,11 @@ class ReplayStreamer:
         self.target_pair = "DOGE/USDT"
         self.ref_pair = "BTC/USDT"
         
-        # Suffix kolom dari Loader
+        # Suffix kolom dari Loader (misal: close_DOGE-USDT)
         self.tgt_suf = self.target_pair.replace('/', '-')
         self.ref_suf = self.ref_pair.replace('/', '-')
         
-        logger.info(f"🏭 INIT REPLAY AGGREGATOR: {self.conf.get('name', 'Custom')}")
+        logger.info(f"🎞️  INIT PURE REPLAY: {self.conf.get('name', 'Custom Scenario')}")
         
         # 1. LOAD RAW DATA
         try:
@@ -43,74 +49,75 @@ class ReplayStreamer:
                 end_date=self.conf['end']
             )
         except Exception as e:
-            logger.critical(f"❌ FATAL: Gagal memuat data. {e}")
+            logger.critical(f"❌ FATAL: Gagal memuat data replay. {e}")
             self.df = None
             
-        # 2. INIT AGGREGATORS (Satu untuk setiap pair)
-        # Interval 60 detik (1m) sesuai data parquet
+        # 2. INIT AGGREGATORS (60s Interval)
         self.agg_target = create_candle_aggregator(interval_seconds=60)
         self.agg_ref = create_candle_aggregator(interval_seconds=60)
 
-        # 3. INIT CHAOS
-        chaos_cfg = self.conf.get('chaos', {})
-        self.chaos = ChaosMonkey(chaos_cfg) if chaos_cfg else None
-
     def stream(self, delay_sec: float = 0.0) -> Generator[MarketObservation, None, None]:
+        """
+        Yields MarketObservation (Candle Data) ke Engine.
+        """
         if self.df is None or self.df.empty:
+            logger.error("🛑 Stream Aborted: No Data.")
             return
 
         total_ticks = len(self.df)
-        logger.info(f"▶️  START PIPELINE: {total_ticks} ticks -> Aggregator -> Engine")
+        logger.info(f"▶️  START STREAM: {total_ticks} raw ticks queued.")
 
         records = self.df.to_dict('records')
+
+        log_interval = max(1, total_ticks//10)
+
         
         for i, row in enumerate(records):
-            
-            # A. CHAOS INJECTION (Pada data mentah sebelum masuk Aggregator)
-            if self.chaos:
-                # row = self.chaos.apply(row) # Implementasi chaos nanti
-                pass
-
             ts = int(row['timestamp'])
             
-            # B. CREATE TICKS (Seolah-olah dari WebSocket)
-            # Ambil Close price sebagai 'Tick' harga saat ini
-            tick_target = create_market_tick(
+            # Gunakan Source Futures agar Engine menganggap ini data Live
+            src = DataSource.BINANCE_FUTURES
+
+            # --- A. CREATE TICKS (Result Wrapper) ---
+            res_target = create_market_tick(
                 timestamp=ts,
                 symbol=self.target_pair,
                 price=float(row[f'close_{self.tgt_suf}']),
                 volume=float(row[f'vol_{self.tgt_suf}']),
-                source="SIM_FEED"
+                source=src 
             )
             
-            tick_ref = create_market_tick(
+            res_ref = create_market_tick(
                 timestamp=ts,
                 symbol=self.ref_pair,
                 price=float(row[f'close_{self.ref_suf}']),
                 volume=float(row[f'vol_{self.ref_suf}']),
-                source="SIM_FEED"
+                source=src
             )
 
-            # C. FEED AGGREGATOR (The Real Processing)
-            # Masukkan tick ke mesin pengolah candle
-            candle_target = self.agg_target.on_tick(tick_target)
-            candle_ref = self.agg_ref.on_tick(tick_ref)
+            # Validasi & Unwrap (Skip jika data cacat)
+            if res_target.is_err() or res_ref.is_err():
+                continue
 
-            # D. CHECK OUTPUT
-            # Aggregator hanya me-return Candle jika interval sudah selesai.
-            # Karena data kita 1m dan interval 1m, ini akan output candle (dengan 1 tick delay).
-            
+            tick_target = res_target.unwrap()
+            tick_ref = res_ref.unwrap()
+
+            # --- B. FEED AGGREGATOR ---
+            # Menggunakan method .add_tick() sesuai Protocol
+            candle_target = self.agg_target.add_tick(tick_target)
+            candle_ref = self.agg_ref.add_tick(tick_ref)
+
+            # --- C. CHECK OUTPUT & YIELD ---
+            # Hanya yield jika Aggregator selesai membentuk candle penuh
             if candle_target and candle_ref:
-                # E. CONSTRUCT OBSERVATION (Hanya jika kedua candle matang)
                 obs = MarketObservation(
                     timestamp=ts,
                     symbol=self.target_pair,
-                    source="AGGREGATED_SIM",
+                    source="AGGREGATED_FUTURES", 
                     data={
                         "close_DOGE": candle_target.close,
                         "close_BTC": candle_ref.close,
                         "volume": candle_target.volume,
-                        # Metadata untuk debug
                         "is_complete": True
                     }
                 )
@@ -120,7 +127,10 @@ class ReplayStreamer:
             if delay_sec > 0:
                 time.sleep(delay_sec)
                 
-            if i > 0 and i % (total_ticks // 10) == 0:
+            # Log Progress
+            if total_ticks > 10 and i % log_interval == 0:
                 logger.info(f"⏳ Progress: {(i/total_ticks)*100:.0f}%")
 
         logger.info("🏁 REPLAY FINISHED.")
+
+__all__ = ['ReplayStreamer']
