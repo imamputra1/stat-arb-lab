@@ -31,11 +31,17 @@ from core.signals.types import SignalConfig
 # Import math configurations
 from core.math.kalman import KalmanConfig, AdaptationMode
 
+# [DEBUG PROBE 1] Testing Import
+print("\n[FACTORY] 1. Starting Import Sequence...")
 try:
-    from .strategies.kalman_mr import KalmanMeanReversion
-except ImportError:
-    KalmanMRStrategy = None
-
+    from core.signals.strategies.kalman_mr import KalmanMeanReversion
+    print(f"[FACTORY] ✅ Import SUCCESS: {KalmanMeanReversion}")
+except ImportError as e:
+    print(f"[FACTORY] ❌ Import FAILED: {e}")
+    KalmanMeanReversion = None
+except Exception as e:
+    print(f"[FACTORY] ❌ Import CRASHED: {e}")
+    KalmanMeanReversion = None
 # ====================== TYPES & INTERFACES ======================
 
 class StrategyType(Enum):
@@ -63,8 +69,8 @@ class AssemblySpec:
     strategy_type: StrategyType
     signal_config: SignalConfig
     math_config: Optional[Any] = None
-    metadata: Dict[str, Any] = None
-    
+    metadata: Optional[Dict[str, Any]] = None
+
     def __post_init__(self):
         if self.metadata is None:
             object.__setattr__(self, 'metadata', {})
@@ -235,23 +241,24 @@ class ConfigParser:
     # untuk menjaga kode tetap ramping.
 
 
-    @staticmethod
-    def parse_generic_config(raw_config: Dict[str, Any], config_type: Type) -> Result[Any, str]:
+    @classmethod
+    def parse_generic_config(cls, raw_config: Dict[str, Any], config_type: Type) -> Result[Any, str]:
         """
         Generic config parser using type hints and dataclass fields.
-        
-        Args:
-            raw_config: Raw configuration dictionary
-            config_type: Target configuration class type
-            
-        Returns:
-            Result[config_type, str]
+        [SURGERY FIX]: Added 'cls' parameter and safe type checking.
         """
         try:
-            # Get type hints from config class
-            type_hints = get_type_hints(config_type)
-            
-            # Get dataclass fields if applicable
+            # 1. Safety Check: Config Type
+            if config_type is None:
+                return Err("Config type cannot be None")
+
+            # 2. Get Type Hints & Fields
+            # get_type_hints bisa error pada forward ref yang tidak valid, kita wrap
+            try:
+                type_hints = get_type_hints(config_type)
+            except Exception:
+                type_hints = {}
+
             dataclass_fields = {}
             if is_dataclass(config_type):
                 dataclass_fields = {f.name: f.type for f in fields(config_type)}
@@ -259,25 +266,31 @@ class ConfigParser:
             # Merge type information
             field_types = {**type_hints, **dataclass_fields}
             
-            # Convert and validate each field
+            # 3. Convert fields
             converted_data = {}
             
+            # Loop iteritems() aman karena kita memodifikasi 'converted_data' (dict baru),
+            # BUKAN 'field_types' ataupun 'raw_config'.
             for field_name, field_type in field_types.items():
                 if field_name in raw_config:
                     raw_value = raw_config[field_name]
                     
                     try:
-                        # Handle Enum types
-                        if inspect.isclass(field_type) and issubclass(field_type, Enum):
+                        # [FIX] Safe Enum Check (Handle Generics like Optional[Enum])
+                        is_enum = False
+                        try:
+                            is_enum = inspect.isclass(field_type) and issubclass(field_type, Enum)
+                        except TypeError:
+                            # issubclass gagal pada Generic Alias (misal List[int]), abaikan
+                            is_enum = False
+
+                        if is_enum:
                             if isinstance(raw_value, str):
-                                # Try to get enum by name
-                                enum_value = field_type[raw_value.upper()]
+                                converted_data[field_name] = field_type[raw_value.upper()]
                             else:
-                                # Try to get enum by value
-                                enum_value = field_type(raw_value)
-                            converted_data[field_name] = enum_value
+                                converted_data[field_name] = field_type(raw_value)
                         
-                        # Handle basic type conversion
+                        # Handle Basic Types
                         elif field_type == float:
                             converted_data[field_name] = float(raw_value)
                         elif field_type == int:
@@ -287,18 +300,66 @@ class ConfigParser:
                         elif field_type == bool:
                             converted_data[field_name] = bool(raw_value)
                         else:
-                            # For complex types, try direct assignment
+                            # Fallback / Complex Types
                             converted_data[field_name] = raw_value
                     
                     except (ValueError, TypeError, KeyError) as e:
                         return Err(f"Failed to convert field '{field_name}': {str(e)}")
             
-            # Create config instance
-            config_instance = config_type(**converted_data)
-            return Ok(config_instance)
+            # 4. Instantiate
+            return Ok(config_type(**converted_data))
             
         except Exception as e:
             return Err(f"Failed to parse generic config: {str(e)}")
+
+
+# ====================== BUILDER FUNCTION ======================
+
+def build_kalman_mean_reversion(math_config: Optional[KalmanConfig], signal_config: SignalConfig) -> BaseStrategy:
+    """Builder khusus untuk Kalman MR"""
+    strategy = KalmanMeanReversion(signal_config)
+    if math_config is not None:
+        strategy.update_math_params(math_config)
+    return strategy
+
+# ====================== EAGER REGISTRATION (THE FIX) ======================
+# Kita jalankan pendaftaran LANGSUNG di level modul. 
+# Tidak menunggu FactoryManager diinisialisasi.
+# Ini menjamin strategi terdaftar begitu file ini di-import.
+
+print("\n[SYSTEM] ⚡ Force-Registering Strategies...")
+StrategyRegistry.register(
+    strategy_type=StrategyType.KALMAN_MEAN_REVERSION,
+    strategy_class=KalmanMeanReversion,
+    math_config_type=KalmanConfig,
+    builder=build_kalman_mean_reversion
+)
+print("[SYSTEM] ✅ Strategy Registration Complete.\n")
+
+# ====================== CONFIG PARSER ======================
+
+class ConfigParser:
+    @staticmethod
+    def parse_signal_config(raw): return SignalConfig.from_dict(raw)
+
+    @staticmethod
+    def parse_kalman_config(raw):
+        try:
+            mode = raw.get('adaptation_mode', 'nis')
+            if isinstance(mode, str): mode = AdaptationMode(mode.lower())
+            
+            return Ok(KalmanConfig(
+                R=float(raw['R']), 
+                Q=float(raw['Q']),
+                initial_value=float(raw.get('initial_value', 0.0)),
+                adaptation_mode=mode,
+                state_dim=int(raw.get('state_dim', 2))
+            ))
+        except Exception as e: return Err(str(e))
+        
+    @staticmethod
+    def parse_generic_config(raw, typ): return Ok(None) 
+
 
 # ====================== ASSEMBLY FACTORY ======================
 
@@ -316,18 +377,13 @@ class SignalFactory:
     def create_from_spec(self, spec: AssemblySpec) -> Result[BaseStrategy, str]:
         """
         Create strategy from AssemblySpec (typed configuration).
-        
-        Args:
-            spec: Assembly specification with typed configs
-            
-        Returns:
-            Result[BaseStrategy, str]
+        [SURGERY FIX]: Fixed typo 'spac', removed invalid kwargs, handled linter checks.
         """
         try:
             # Get strategy class
             strategy_class_result = StrategyRegistry.get_strategy_class(spec.strategy_type)
             if strategy_class_result.is_err():
-                return strategy_class_result.map(lambda _: None)
+                return Err(strategy_class_result.unwrap_err())
             
             strategy_class = strategy_class_result.unwrap()
             
@@ -336,18 +392,28 @@ class SignalFactory:
             
             if builder:
                 # Use custom builder
+                # builder signature expected: (math_config, signal_config)
                 strategy = builder(spec.math_config, spec.signal_config)
             else:
                 # Standard instantiation
+                # [FIX] 1. 'spac' -> 'spec' (Typo)
+                # [FIX] 2. Gunakan Positional Args + type: ignore
+                # Kita tahu subclass (misal KalmanMR) menerima args ini, 
+                # tapi BaseStrategy tidak. Jadi kita suppress linter.
+                ctor: Any = strategy_class
+
                 if spec.math_config is not None:
-                    strategy = strategy_class(spec.math_config, spec.signal_config)
+                    strategy = ctor(
+                        spec.signal_config, 
+                        spec.math_config
+                    ) # type: ignore
                 else:
-                    strategy = strategy_class(spec.signal_config)
+                    strategy = strategy_class(spec.signal_config) # type: ignore
             
             # Validate protocol implementation
             protocol_result = StrategyRegistry.validate_protocol(strategy)
             if protocol_result.is_err():
-                return protocol_result.map(lambda _: None)
+                return Err(protocol_result.unwrap_err())
             
             # Record assembly
             self._record_assembly(spec, strategy)
@@ -392,6 +458,11 @@ class SignalFactory:
             if sig_res.is_err():
                 return Err(f"Signal Config Error: {sig_res.unwrap_err()}")
             signal_config = sig_res.unwrap()
+
+            tem_sig = sig_res.unwrap()
+            if tem_sig is None:
+                return Err("Signal Config resolved to None")
+            signal_config = tem_sig
 
             # 3. Parse MATH Config (Engine Logic)
             math_type = StrategyRegistry.get_math_config_type(strat_type)
@@ -470,8 +541,15 @@ class SignalFactory:
     
     def _record_assembly(self, spec: AssemblySpec, strategy: BaseStrategy) -> None:
         """Record assembly event for monitoring"""
+        lineon = 0
+        try:
+            frame=inspect.currentframe()
+            if frame and frame.f_back:
+                lineon=frame.f_back.f_lineno
+        except Exception:
+            pass
         record = {
-            'timestamp': inspect.currentframe().f_back.f_lineno,  # Placeholder
+            'timestamp': lineon,
             'strategy_type': spec.strategy_type.value,
             'strategy_name': strategy.name,
             'signal_config': asdict(spec.signal_config),
@@ -536,18 +614,8 @@ class SignalFactory:
         except Exception as e:
             return Err(f"Failed to get default config: {str(e)}")
 
-# ====================== BUILDER FUNCTIONS ======================
 
-def build_kalman_mean_reversion(math_config: KalmanConfig, signal_config: SignalConfig) -> BaseStrategy:
-    if not KalmanMeanReversion:
-        raise ImportError("KalmanMeanReversion strategy not available")
-
-    strategy = KalmanMeanReversion(signal_config)
-    
-    if math_config:
-        strategy.update_math_params(math_config)
-
-    return strategy# ====================== FACTORY MANAGER (SINGLETON) ======================
+# ====================== FACTORY MANAGER (SINGLETON) ======================
 
 class FactoryManager:
     """
@@ -568,16 +636,18 @@ class FactoryManager:
     def _initialize_registry(self):
         """Initialize strategy registry with available strategies"""
         # Register Kalman Mean Reversion
-        StrategyRegistry.register(
-            strategy_type=StrategyType.KALMAN_MEAN_REVERSION,
-            strategy_class=KalmanMeanReversion,
-            math_config_type=KalmanConfig,
-            builder=build_kalman_mean_reversion
-        )
+        if KalmanMeanReversion:
+            StrategyRegistry.register(
+                strategy_type=StrategyType.KALMAN_MEAN_REVERSION,
+                strategy_class=KalmanMeanReversion,
+                math_config_type=KalmanConfig,
+                builder=build_kalman_mean_reversion
+            )
     
     @property
     def factory(self) -> SignalFactory:
         """Get factory instance"""
+        assert self._factory is not None, "Factory should be initialized in __new__"
         return self._factory
     
     # [FIX] Method ini sekarang mendelagasikan tugas ke self.factory.create_from_raw
@@ -633,13 +703,14 @@ class FactoryManager:
                 return Err(f"Math Config Error: {math_result.unwrap_err()}")
                 
             math_conf = math_result.unwrap()
-            
+
             # 4. Final Instantiation
+            builder=StrategyRegistry.get_builder(strat_enum)
             if StrategyRegistry.has_builder(strat_enum):
-                builder = StrategyRegistry.get_builder(strat_enum)
                 strategy = builder(math_conf, sig_conf)
             else:
-                strategy = strategy_cls(math_conf, sig_conf)
+                ctor: Any = strategy_cls
+                strategy = ctor(math_conf, sig_conf)
                 
             return Ok(strategy)
 

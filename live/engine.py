@@ -1,203 +1,201 @@
 """
-LIVE ENGINE - THE HEARTBEAT
-Location: core/engine/live_engine.py
-Desc: Menghubungkan Market Data Stream ke Strategy via Factory.
-      Handling Real-time Latency dan Error Recovery.
-"""
-
-import time
-from typing import Dict, Any
-"""
-THE ORCHESTRATOR: LIVE TRADING ENGINE
+THE ORCHESTRATOR (PERFORMANCE & STRESS TEST EDITION)
 Location: live/engine.py
-Desc: Menggabungkan Strategy, Risk, dan Execution (OMS) dalam satu loop.
-      Single Source of Truth configuration dari 'live/config.py'.
+Desc: Engine tanpa batas kecepatan (No Sleep). Dilengkapi Speedometer (TPS).
+      Tujuannya mengukur raw performance dari Core Strategy.
 """
 
 import logging
+import time
+import math
+import random
+import traceback
+import pandas as pd
+from dataclasses import dataclass
+from datetime import datetime
+from typing import List
+
+# [VISUALIZATION TOOLS]
+try:
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+except ImportError:
+    print("⚠️ Plotly/Pandas belum terinstall.")
 
 # [CORE IMPORTS]
-from core.shared.result import Result, Ok, Err
+from core.shared.result import Ok
 from core.signals.factory import FactoryManager
-from core.signals.types import MarketObservation, SignalEvent, SignalType
+from core.signals.base_signal import BaseStrategy
+from core.signals.types import MarketObservation
+
+# [MOCKED COMPONENTS - TETAP DIPAKAI UNTUK STRESS TEST]
+class RiskManager:
+    def __init__(self, config): self.config = config
+    def validate_signal(self, signal): return Ok(True)
+
+class OrderManagementSystem:
+    def __init__(self, config): self.config = config
+    def execute(self, signal): return Ok(f"MOCK-ORD-{int(time.time())}")
 
 # [CONFIG IMPORT]
 try:
-    # Mengambil block config terpisah
-    from live.config import (
-        STRATEGY_CONFIG, 
-        RISK_CONFIG, 
-        EXECUTION_CONFIG,
-        SYSTEM_CONFIG
-    )
+    from live.config import STRATEGY_CONFIG, EXECUTION_CONFIG, RISK_CONFIG, DATA_CONFIG
 except ImportError:
-    # Fallback darurat jika config.py belum ada/rusak
-    logging.warning("⚠️ Config file not found/broken. Using fallback.")
-    STRATEGY_CONFIG = {"type": "kalman_mr", "name": "Fallback", "signal_params": {}, "math_params": {}}
-    RISK_CONFIG = {}
-    EXECUTION_CONFIG = {}
+    STRATEGY_CONFIG = {}
 
-# Setup Logger
-logger = logging.getLogger("Engine")
-logging.basicConfig(
-    level=logging.INFO, 
-    format='%(asctime)s | %(levelname)s | %(name)s | %(message)s'
-)
+# Matikan Log Info biasa agar tidak memperlambat Terminal
+logging.basicConfig(level=logging.WARNING) 
 
-# ==============================================================================
-# MOCK / PLACEHOLDER COMPONENTS (Jika file Risk/OMS belum final)
-# ==============================================================================
-class RiskManager:
-    """Penjaga Gawang: Memastikan sinyal aman dieksekusi"""
-    def __init__(self, config: Dict):
-        self.config = config
-        self.max_drawdown = config.get("max_drawdown", 0.1)
-    
-    def validate(self, signal: SignalEvent) -> bool:
-        # TODO: Implementasi Real Risk Check (Exposure, Drawdown, etc)
-        # Di sini kita reject jika sinyalnya STOP
-        if signal.signal_type == SignalType.STOP:
-            logger.warning(f"🛡️ RISK BLOCK: Signal STOP triggered for {signal.symbol}")
-            return False
-        return True
-
-class OrderManagementSystem:
-    """Eksekutor: Mengirim order ke Binance/Exchange"""
-    def __init__(self, config: Dict):
-        self.config = config
-        self.mode = config.get("mode", "PAPER") # Paper or Live
-    
-    def execute(self, signal: SignalEvent) -> Result[str, str]:
-        # TODO: Connect to CCXT / Binance API
-        action = signal.signal_type.name
-        log_msg = f"Orders sent to Exchange: {action} {signal.symbol} (Simulated)"
-        logger.info(f"⚡ OMS EXECUTION [{self.mode}]: {log_msg}")
-        return Ok("Order_ID_12345")
-
-# ==============================================================================
-# MAIN ENGINE CLASS
-# ==============================================================================
+@dataclass
+class TickRecord:
+    timestamp: datetime
+    price: float
+    kalman: float
+    signal: str
+    equity: float
 
 class TradingEngine:
-    """
-    Central Nervous System.
-    Flow: Data -> Strategy -> Risk -> OMS
-    """
     
-    def __init__(self):
-        logger.info(f"🚀 ENGINE IGNITION ({SYSTEM_CONFIG.get('env', 'DEV')})")
+    def __init__(self, strategy: BaseStrategy, risk_manager, oms):
+        self.strategy = strategy
+        self.risk = risk_manager
+        self.oms = oms
         
-        # 1. Load Components
-        self._init_strategy()
-        self._init_risk()
-        self._init_oms()
-        
-        # State
+        self.history: List[TickRecord] = []
+        self.current_equity = 100000.0
+        self.position = 0.0 
         self.tick_count = 0
-        self.is_running = True
-
-    def _init_strategy(self):
-        """Merakit Strategi via Factory menggunakan STRATEGY_CONFIG"""
-        logger.info(f"🧠 Initializing Strategy: {STRATEGY_CONFIG.get('name')}")
         
-        # Panggil FactoryManager (Singleton)
-        res = FactoryManager.create_strategy(STRATEGY_CONFIG)
+        # [PERFORMANCE METRICS]
+        self.start_time = 0
+        self.last_report_time = 0
         
-        if res.is_err():
-            raise RuntimeError(f"Strategy Init Failed: {res.unwrap_err()}")
-            
-        self.strategy = res.unwrap()
-        logger.info("✅ Brain Online")
+        print("\n🚀 ORCA ENGINE: STRESS TEST MODE (MAX SPEED)")
+        print(f"   Strategy: {self.strategy.name}")
+        print("   Status: Running without speed limit...")
+        print("-" * 80)
 
-    def _init_risk(self):
-        """Menyiapkan Risk Manager"""
-        self.risk = RiskManager(RISK_CONFIG)
-        logger.info("✅ Shield Online")
-
-    def _init_oms(self):
-        """Menyiapkan OMS"""
-        self.oms = OrderManagementSystem(EXECUTION_CONFIG)
-        logger.info("✅ Hands Online")
-
-    def process_tick(self, raw_data: Dict[str, Any]) -> Result[str, str]:
-        """
-        [THE PIPELINE]
-        Satu putaran penuh pemrosesan data.
-        """
+    def process_tick(self, observation: MarketObservation) -> None:
+        self.tick_count += 1
+        
         try:
-            self.tick_count += 1
+            # 1. Strategy Logic (THE HEAVY LIFTING)
+            signal_res = self.strategy.evaluate_state(observation)
             
-            # --- PHASE 1: SENSOR (Data Ingestion) ---
-            # Konversi Raw Dict -> MarketObservation (Industrial Standard)
-            # Pastikan timestamp valid (handle float/int/datetime di luar atau di sini)
-            ts = raw_data.get('timestamp', int(time.time()*1000))
+            # 2. Mock Execution Logic (Minimal Overhead)
+            price = observation.data.get('close_DOGE', 0.0)
+            sig_name = "NEUTRAL"
             
-            observation = MarketObservation(
-                timestamp=ts,
-                data=raw_data,
-                source="live_feed",
-                symbol=raw_data.get('symbol', 'UNKNOWN')
-            )
+            if signal_res.is_ok():
+                signal = signal_res.unwrap()
+                sig_name = signal.signal_type.name
+                
+                s_type = signal.signal_type.name
+                if "LONG" in s_type and "ENTRY" in s_type:
+                    self.position += 100
+                    self.current_equity -= (price * 100)
+                elif "SHORT" in s_type and "ENTRY" in s_type:
+                    self.position -= 100
+                    self.current_equity += (price * 100)
+                elif "EXIT" in s_type and self.position != 0:
+                    self.current_equity += (self.position * price)
+                    self.position = 0
 
-            # --- PHASE 2: BRAIN (Strategy Logic) ---
-            # Signal Generation (Kalman Calculation)
-            sig_res = self.strategy.evaluate_state(observation)
-            
-            if sig_res.is_err():
-                # Error di strategi (misal data kurang) bukan fatal error engine
-                # Cukup log warning dan skip tick ini
-                return Err(f"Strategy Skip: {sig_res.unwrap_err()}")
-            
-            signal = sig_res.unwrap()
+            # 3. RECORDING (Sampling Only)
+            # Agar memori tidak meledak saat stress test jutaan tick,
+            # kita hanya rekam 1 dari setiap 100 tick, atau jika ada signal.
+            if sig_name != "NEUTRAL" or self.tick_count % 100 == 0:
+                kalman_val = 0.0
+                if hasattr(self.strategy, 'get_state'):
+                    try:
+                        st = self.strategy.get_state()
+                        obj = st.unwrap() if hasattr(st, 'is_ok') and st.is_ok() else st
+                        if isinstance(obj, dict): kalman_val = obj.get('kalman_value', 0.0)
+                        else: kalman_val = getattr(obj, 'kalman_value', 0.0)
+                    except: pass
 
-            # Filter Noise: Jika NEUTRAL, berhenti di sini
-            if signal.signal_type == SignalType.NEUTRAL:
-                if self.tick_count % 50 == 0: # Heartbeat log
-                    logger.info(f"💤 Monitoring... Z-Score: {signal.strength:.2f}")
-                return Ok("NEUTRAL")
-
-            # --- PHASE 3: SHIELD (Risk Check) ---
-            # Validasi apakah sinyal aman untuk dieksekusi
-            logger.info(f"🚨 SIGNAL DETECTED: {signal.signal_type.name} | Z: {signal.strength:.2f}")
-            
-            if not self.risk.validate(signal):
-                return Ok("REJECTED_BY_RISK")
-
-            # --- PHASE 4: HANDS (Execution) ---
-            # Kirim ke Binance/Exchange
-            exec_res = self.oms.execute(signal)
-            
-            if exec_res.is_ok():
-                return Ok(f"EXECUTED: {exec_res.unwrap()}")
-            else:
-                return Err(f"OMS Failed: {exec_res.unwrap_err()}")
+                self.history.append(TickRecord(
+                    timestamp=datetime.now(),
+                    price=price,
+                    kalman=kalman_val,
+                    signal=sig_name,
+                    equity=self.current_equity + (self.position * price)
+                ))
 
         except Exception as e:
-            logger.error(f"CRITICAL LOOP ERROR: {e}", exc_info=True)
-            return Err(f"Crash: {str(e)}")
+            print(f"🔥 CRASH: {e}")
+            traceback.print_exc()
 
-# ==============================================================================
-# DIRECT RUNNER (Untuk Test Manual Cepat)
-# ==============================================================================
+    def report_performance(self):
+        """Menghitung Kecepatan Engine"""
+        now = time.time()
+        elapsed = now - self.start_time
+        
+        if elapsed > 0:
+            tps = self.tick_count / elapsed
+            print(f"⏱️  PERFORMANCE: {self.tick_count:,.0f} Ticks Processed | Speed: {tps:,.2f} ticks/sec | Equity: {self.current_equity:,.2f}")
+        
+    def generate_html_report(self):
+        print("\n⏳ Generating Stress Test Report...")
+        if not self.history: return
+        
+        df = pd.DataFrame([vars(x) for x in self.history])
+        
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, subplot_titles=("Price & Signals (Sampled)", "Equity Curve"))
+        
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['price'], name='Price'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['kalman'], name='Kalman'), row=1, col=1)
+        
+        buys = df[df['signal'].str.contains('LONG')]
+        sells = df[df['signal'].str.contains('SHORT')]
+        
+        fig.add_trace(go.Scatter(x=buys['timestamp'], y=buys['price'], mode='markers', marker=dict(color='green', size=8), name='BUY'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=sells['timestamp'], y=sells['price'], mode='markers', marker=dict(color='red', size=8), name='SELL'), row=1, col=1)
+        
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['equity'], name='Equity', fill='tozeroy'), row=2, col=1)
+        
+        fig.update_layout(height=800, title="Orca Stress Test Result", template="plotly_dark")
+        fig.write_html(f"stress_test_{int(time.time())}.html")
+        print("✅ Report saved.")
+
+def bootstrap_engine():
+    strat = FactoryManager.create_strategy(STRATEGY_CONFIG).unwrap()
+    return TradingEngine(strat, RiskManager(RISK_CONFIG), OrderManagementSystem(EXECUTION_CONFIG))
+
 if __name__ == "__main__":
-    # Test sederhana seolah-olah ada data masuk
-    engine = TradingEngine()
+    engine = bootstrap_engine()
+    engine.start_time = time.time()
     
-    # Simulasi Data Dummy
-    import math
-    
-    print("\n📺 STARTING SIMULATION FEED...")
-    for i in range(50):
-        # Bikin harga sinusoidal supaya trigger signal
-        price = 100 + 5 * math.sin(i * 0.5) 
+    try:
+        # STRESS TEST LOOP
+        # Target: Jalankan selama 10 detik secepat mungkin
+        TARGET_DURATION = 10 
+        end_time = time.time() + TARGET_DURATION
         
-        dummy_packet = {
-            "timestamp": int(time.time() * 1000),
-            "symbol": "DOGE/USDT",
-            "close_DOGE": price,
-            "close_BTC": 100, # Flat
-            "volume": 1000
-        }
+        t = 0
+        while time.time() < end_time:
+            t += 1
+            # Generator Super Cepat
+            noise = random.gauss(0, 0.5)
+            trend = math.sin(t * 0.01) * 5
+            
+            obs = MarketObservation(
+                timestamp=int(time.time() * 1000),
+                symbol="DOGE/USDT",
+                source="STRESS_TEST",
+                data={"close_DOGE": 100 + trend + noise, "close_BTC": 100 + trend*0.8, "volume": 1000}
+            )
+            
+            engine.process_tick(obs)
+            
+            # Lapor speed setiap 10.000 tick
+            if t % 10000 == 0:
+                engine.report_performance()
+                
+        print("\n🏁 STRESS TEST FINISHED!")
+        engine.report_performance()
+        engine.generate_html_report()
         
-        engine.process_tick(dummy_packet)
-        time.sleep(0.05)
+    except KeyboardInterrupt:
+        engine.report_performance()
+        engine.generate_html_report()
