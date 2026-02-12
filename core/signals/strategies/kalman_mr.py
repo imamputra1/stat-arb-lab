@@ -16,7 +16,8 @@ from core.math import (
     KalmanConfig, 
     KalmanFactory,
     KalmanState,
-    KalmanError
+    KalmanError,
+    AdaptationMode
 )
 
 # IMPORT SYSTEM UTILS
@@ -95,7 +96,7 @@ class KalmanMeanReversion(BaseStrategy):
                 R=0.1, 
                 Q=1e-5, 
                 initial_value=0.0,
-                adaptation_mode=None # Akan default ke NIS di internal Kalman
+                adaptation_mode=AdaptationMode.NIS_THRESHOLD# Akan default ke NIS di internal Kalman
             )
 
         # [5] State management (TETAP SAMA - JANGAN UBAH)
@@ -191,9 +192,12 @@ class KalmanMeanReversion(BaseStrategy):
             if self._kalman_filter is None:
                 init_result = self._initialize_filter(spread)
                 if init_result.is_err():
-                    return init_result.map(lambda _: None)
+                    return Err(init_result.unwrap_err())
                 self._kalman_filter = init_result.unwrap()
                 self._filter_initialized = True
+
+            if self._kalman_filter is None:
+                return Err("Critical: Kalman Filter failed to initialize (None reference)")
             
             # Process through mathematical kernel (GPU-ready)
             self.monitor.start_timer("kalman_update")
@@ -276,8 +280,11 @@ class KalmanMeanReversion(BaseStrategy):
             if p_y.is_err() or p_x.is_err():
                 return Err("Failed to extract prices")
             
-            # [FIX] Panggil _calculate_spread, jangan hitung sendiri!
-            return Ok(self._calculate_spread(p_y.unwrap(), p_x.unwrap()))
+            # [SURGERY FIX] Explicit float casting untuk membungkam Linter
+            val_y = float(p_y.unwrap())
+            val_x = float(p_x.unwrap())
+            
+            return Ok(self._calculate_spread(val_y, val_x))
             
         except Exception as e:
             return Err(f"Extract failed: {str(e)}")
@@ -513,7 +520,7 @@ class KalmanMeanReversion(BaseStrategy):
             timestamp=timestamp,
             signal_type=SignalType.NEUTRAL,
             strength=0.0,
-            metadata=metadata
+            _metadata=metadata
         )
         
         return Ok(signal)
@@ -619,51 +626,52 @@ class KalmanMeanReversion(BaseStrategy):
         except Exception as e:
             logger.error(f"Batch processing failed: {e}")
             return Err(f"Batch processing failed: {str(e)}")
-    
-    def evaluate_state(self, obs: Union[dict, MarketObservation]) -> Result[SignalEvent, str]:
+
+    def evaluate_state(self, observation: MarketObservation) -> Result[SignalEvent, str]:
         """
-        [PORT B: IOT SENSOR INPUT - Live Trading]
-        Menerima Single Observation -> Return Single SignalEvent.
-        
-        Args:
-            obs: dict atau MarketObservation dengan data market
-            
-        Returns:
-            SignalEvent dengan trading decision
+        [SURGERY UPDATE]
+        Logic evaluasi dengan 'Immune System'.
+        FIX: Menggunakan _process_observation (Kernel) alih-alih self.kalman (Legacy).
         """
         try:
-            # Start monitoring
-            self.monitor.start_timer("live_evaluation")
-            
-            # Convert dict ke MarketObservation jika perlu
-            if isinstance(obs, dict):
-                timestamp = obs.get('timestamp', 0)
-                obs = MarketObservation(timestamp=timestamp, data=obs, source="live")
-            
-            # Validate observation
-            if not isinstance(obs, MarketObservation):
-                return Err("Observation must be dict or MarketObservation")
-            
-            # Extract spread
-            spread_result = self._extract_spread(obs)
-            if spread_result.is_err():
-                return Err(f"Failed to extract spread: {spread_result.unwrap_err()}")
-            
-            spread = spread_result.unwrap()
-            
-            # Process observation
-            signal_result = self._process_observation(spread, obs.timestamp) 
-            # Update performance
-            duration = self.monitor.stop_timer("live_evaluation")
-            
-            logger.debug(f"Live evaluation: {obs.timestamp}, spread={spread:.4f}, duration={duration:.2f}ms")
-            
-            return signal_result
-            
+            # --- 1. POISON CONTROL (Input Validation) ---
+            if not observation.data:
+                return Err("Empty Data Payload")
+
+            # Ekstrak Pair Data
+            p_target = observation.data.get("close_DOGE", observation.data.get("close"))
+            p_ref = observation.data.get("close_BTC")
+
+            # a. Cek Kelengkapan Data
+            if p_target is None or p_ref is None:
+                return Err(f"Incomplete Pair Data. Target: {p_target}, Ref: {p_ref}")
+
+            # b. Cek Validitas Numerik (Anti-NaN/Inf)
+            # Menggunakan float() untuk memastikan tipe data, numpy isfinite handle float
+            if not np.isfinite(float(p_target)) or not np.isfinite(float(p_ref)):
+                return Err(f"Non-finite price detected: {p_target} / {p_ref}")
+
+            # c. Cek Harga Nol/Negatif (Anti-Blackhole)
+            if p_target <= 0 or p_ref <= 0:
+                return Err(f"Zero/Negative price detected: {p_target} / {p_ref}")
+
+            # --- 2. CALCULATE SPREAD (Voltage Regulator) ---
+            # Gunakan internal helper agar rumus konsisten (Log Spread)
+            spread = self._calculate_spread(float(p_target), float(p_ref))
+
+            # --- 3. DELEGATE TO MATH KERNEL ---
+            # [CRITICAL FIX]
+            # Jangan panggil self.kalman.update() karena self.kalman tidak ada.
+            # Panggil _process_observation() yang akan mengurus self._kalman_filter,
+            # inisialisasi lazy, update state, history buffer, dan Z-Score.
+            return self._process_observation(spread, observation.timestamp)
+
         except Exception as e:
-            logger.error(f"Live evaluation failed: {e}")
-            return Err(f"Live evaluation failed: {str(e)}")
+            # Catch-all agar error tidak membunuh Engine
+            return Err(f"Strategy Crash detected: {str(e)}")
     
+
+
     # ========== STRATEGY MANAGEMENT ==========
     
     def update_position(self, size: float, price: float) -> Result[None, str]:

@@ -153,6 +153,8 @@ class SignalEvent:
     # --- METADATA (Immutable) ---
     # Menggunakan private dict + property agar benar-benar read-only
     _metadata: Dict[str, Any] = field(default_factory=dict)
+    row_data: Dict[str, Any] = field(default_factory=dict)
+    event_id: str = field(default="")
 
     def __post_init__(self):
         """High-performance validation"""

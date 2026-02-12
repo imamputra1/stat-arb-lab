@@ -11,6 +11,7 @@ import time
 import logging
 from typing import Generator, Dict, Any
 
+
 # Core Imports (Facade)
 from core.data import (
     ParquetLoader, 
@@ -24,8 +25,7 @@ from core.signals.types import MarketObservation
 logger = logging.getLogger("Orca.Stream.Replay")
 
 class ReplayStreamer:
-    """
-    Simulasi Exchange + Aggregator.
+    """    Simulasi Exchange + Aggregator.
     Membaca data mentah, mengubahnya menjadi tick, lalu mengagregasikannya menjadi candle.
     """
     
@@ -56,8 +56,9 @@ class ReplayStreamer:
         # 2. INIT AGGREGATORS
         # Kita set interval 60 detik.
         # NOTE: Aggregator "Industrial" harusnya pintar mendeteksi ms vs sec.
-        self.agg_target = create_candle_aggregator(interval_seconds=60)
-        self.agg_ref = create_candle_aggregator(interval_seconds=60)
+        self.interval_ms = 60 * 1000
+        self.agg_target = create_candle_aggregator(interval_seconds=self.interval_ms)
+        self.agg_ref = create_candle_aggregator(interval_seconds=self.interval_ms)
 
     def stream(self, delay_sec: float = 0.0) -> Generator[MarketObservation, None, None]:
         if self.df is None or self.df.empty:

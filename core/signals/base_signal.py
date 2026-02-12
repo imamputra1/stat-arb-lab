@@ -4,7 +4,7 @@ Protocol for all trading strategies in ORCA system
 """
 
 from abc import ABC, abstractmethod
-from typing import Protocol, runtime_checkable, Generic, TypeVar, Any, List
+from typing import Optional, Protocol, runtime_checkable, Generic, TypeVar, Any, List
 import pandas as pd
 
 
@@ -127,7 +127,7 @@ class BaseStrategy(ABC, Generic[T]):
     # HAPUS _validate_dataframe yang lama.
     # GANTIKAN dengan validate_data yang dinamis ini:
     
-    def validate_data(self, df: pd.DataFrame, required_cols: List[str] = None) -> Result[bool, str]:
+    def validate_data(self, df: pd.DataFrame, required_cols: Optional[List[str] ]= None) -> Result[bool, str]:
         """
         [GENERIC VALIDATION]
         Cek kelengkapan data tanpa hardcode nama kolom.
