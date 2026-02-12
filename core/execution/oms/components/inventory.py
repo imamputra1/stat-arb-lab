@@ -8,6 +8,7 @@ Desc: Komponen yang mengelola 'Barang' (Posisi) dan 'Uang' (Cash).
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from dataclasses import dataclass
+import math
 
 from core.shared.result import Result, Ok, Err
 from core.shared.utils import get_logger
@@ -177,3 +178,67 @@ class InventoryManager:
         """Debit/Credit cash balance"""
         current = self._cash_balances.get(currency, 0.0)
         self._cash_balances[currency] = current + amount
+
+    # ========== 🔥 NEW METHODS – EQUITY & STATE VALIDATION ==========
+
+    def get_equity(self, market_prices: Dict[Symbol, float]) -> float:
+        """
+        Hitung total ekuiti = cash + nilai pasar seluruh posisi.
+        
+        Args:
+            market_prices: mapping symbol -> harga terkini (float).
+                          Harga None/NaN akan di-skip, posisi dianggap 0.
+        Returns:
+            Total ekuiti dalam base currency.
+        """
+        # 1. Cash dalam base currency
+        total = self.get_cash_balance(self.base_currency)
+        
+        # 2. Tambahkan nilai pasar tiap posisi
+        for sym, pos in self._positions.items():
+            if not pos.is_open or pos.quantity == 0.0:
+                continue
+            
+            price = market_prices.get(sym)
+            if price is None:
+                logger.warning(f"⚠️ Missing market price for {sym}, skipping position valuation")
+                continue
+            if not isinstance(price, (int, float)) or math.isnan(price) or math.isinf(price):
+                logger.warning(f"⚠️ Invalid market price {price} for {sym}, skipping")
+                continue
+                
+            total += pos.quantity * price
+        
+        return total
+
+    def validate_state(self) -> Result[bool, str]:
+        """
+        Sanity check internal state.
+        Returns:
+            Ok(True) jika semua komponen konsisten.
+            Err(deskripsi) jika ditemukan anomali.
+        """
+        # 1. Cek cash balances tidak negatif
+        for curr, bal in self._cash_balances.items():
+            if not isinstance(bal, (int, float)) or math.isnan(bal) or math.isinf(bal):
+                return Err(f"Cash balance {curr} is invalid: {bal}")
+            if bal < 0:
+                return Err(f"Cash balance {curr} is negative: {bal}")
+        
+        # 2. Cek setiap posisi
+        for sym, pos in self._positions.items():
+            # quantity harus numerik valid
+            if not isinstance(pos.quantity, (int, float)) or math.isnan(pos.quantity) or math.isinf(pos.quantity):
+                return Err(f"Position {sym} quantity is invalid: {pos.quantity}")
+            
+            # average_entry_price tidak negatif dan numerik
+            if not isinstance(pos.average_entry_price, (int, float)) or math.isnan(pos.average_entry_price) or math.isinf(pos.average_entry_price):
+                return Err(f"Position {sym} avg price is invalid: {pos.average_entry_price}")
+            if pos.average_entry_price < 0:
+                return Err(f"Position {sym} avg price is negative: {pos.average_entry_price}")
+            
+            # realized_pnl tidak NaN / Inf
+            if not isinstance(pos.realized_pnl, (int, float)) or math.isnan(pos.realized_pnl) or math.isinf(pos.realized_pnl):
+                return Err(f"Position {sym} realized_pnl is invalid: {pos.realized_pnl}")
+        
+        return Ok(True)

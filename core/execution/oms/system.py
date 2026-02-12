@@ -5,15 +5,16 @@ Location: core/execution/oms/system.py
 
 import uuid
 import asyncio
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime, timezone
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Optional
 
 from core.shared.result import Result, Ok, Err
 from core.shared.utils import get_logger
 
-from core.execution.types import OrderRequest, ExecutionReport, TimeInForce
+from core.execution.types import OrderRequest, ExecutionReport, TimeInForce, Symbol
 from .components import InventoryManager, Accountant, Sentry, PortfolioSnapshot
 
 logger = get_logger("oms.system")
@@ -66,14 +67,35 @@ class OrderManagementSystem:
     async def stop(self):
         self._is_running = False
 
+    # 🔧 MODIFIED: Sekarang menggunakan comprehensive risk check dari Sentry
     async def submit_order(self, request: OrderRequest) -> Result[ExecutionReport, str]:
-        if not self._is_running: return Err("OMS is not running")
+        if not self._is_running:
+            return Err("OMS is not running")
+        
         async with self._lock:
-            # Sentry Check
-            if self.sentry.validate_order(request).is_err():
-                return Err("Sentry Blocked")
+            # 1. BASIC SENTRY CHECK (duplicate, rate limit, fat finger)
+            basic_check = self.sentry.validate_order(request)
+            if basic_check.is_err():
+                return Err(basic_check.unwrap_err())
             
-            # Broker Submit
+            # 2. COMPREHENSIVE RISK CHECK (drawdown, exposure, solvency)
+            #    Butuh equity & cash dari inventory
+            market_prices = self._get_market_prices({request.symbol})
+            equity = self.inventory.get_equity(market_prices)
+            cash = self.inventory.get_cash_balance()
+            
+            risk_check = self.sentry.check_risk(request, equity, cash)
+            if risk_check.is_err():
+                logger.warning(f"🚫 Risk rejected: {risk_check.unwrap_err()}")
+                return Err(risk_check.unwrap_err())
+            
+            # 3. Optional external risk callback (jika disediakan)
+            if self.risk_check:
+                ext_check = await self.risk_check(request)
+                if ext_check.is_err():
+                    return Err(ext_check.unwrap_err())
+            
+            # 4. Broker Submit
             res = await self.broker.submit_order(request)
             if res.is_ok():
                 report = res.unwrap()
@@ -85,9 +107,11 @@ class OrderManagementSystem:
 
     async def cancel_order(self, order_id: str) -> Result[ExecutionReport, str]:
         res = await self.broker.cancel_order(order_id)
-        if res.is_ok(): self._handle_execution_report(res.unwrap())
+        if res.is_ok():
+            self._handle_execution_report(res.unwrap())
         return res
 
+    # 🔧 MODIFIED: Sekarang juga update peak equity dan bersihkan state
     async def poll_orders(self):
         """AGGRESSIVE POLLING: Jemput bola status order."""
         active_ids = list(self._orders.keys())
@@ -95,12 +119,26 @@ class OrderManagementSystem:
             res = await self.broker.get_order(oid)
             if res.is_ok():
                 self._handle_execution_report(res.unwrap())
+        
+        # 🔥 Update peak equity untuk drawdown protection
+        await self._update_peak_equity()
 
+    # 🔧 MODIFIED: Sekarang validasi state & rekonsiliasi accountant
     async def reconcile(self):
         res = await self.broker.get_all_positions()
         if res.is_ok():
             async with self._lock:
                 self.inventory.sync_positions(res.unwrap())
+                
+                # 🔥 Validasi internal inventory
+                inv_state = self.inventory.validate_state()
+                if inv_state.is_err():
+                    logger.error(f"🧨 Inventory state invalid: {inv_state.unwrap_err()}")
+                
+                # 🔥 Rekonsiliasi accountant vs inventory
+                acc_rec = self.accountant.reconcile_with_inventory(self.inventory)
+                if acc_rec.is_err():
+                    logger.error(f"🧨 Accountant reconciliation failed: {acc_rec.unwrap_err()}")
 
     def get_portfolio_snapshot(self) -> PortfolioSnapshot:
         return PortfolioSnapshot(
@@ -109,6 +147,51 @@ class OrderManagementSystem:
             total_realized_pnl=self.accountant.get_total_realized_pnl(),
             total_fees=self.accountant.get_total_fees()
         )
+
+    # 🔥 PUBLIC METHOD: Mendapatkan equity terkini
+    def get_equity(self, symbols: Optional[List[Symbol]] = None) -> float:
+        """
+        Menghitung total ekuiti (cash + nilai posisi) berdasarkan harga terkini.
+        Jika symbols diberikan, hanya posisi tersebut yang dihitung (default semua).
+        """
+        if symbols:
+            pos_set = set(symbols)
+        else:
+            pos_set = {pos.symbol for pos in self.inventory.get_all_positions()}
+        market_prices = self._get_market_prices(pos_set)
+        return self.inventory.get_equity(market_prices)
+
+    # 🔥 PRIVATE: Ambil harga pasar terkini untuk symbol tertentu
+    def _get_market_prices(self, symbols: Set[Symbol]) -> Dict[Symbol, float]:
+        """Query market_data untuk mendapatkan harga terakhir."""
+        prices = {}
+        if not self.market_data:
+            return prices
+        
+        # Asumsi market_data memiliki method get_last_price(symbol)
+        # Jika tidak, fallback ke empty dict
+        if not hasattr(self.market_data, 'get_last_price'):
+            logger.warning("⚠️ market_data tidak memiliki get_last_price(), tidak bisa mendapat harga")
+            return prices
+        
+        for sym in symbols:
+            try:
+                price = self.market_data.get_last_price(sym)
+                if price is not None and isinstance(price, (int, float)) and not math.isnan(price) and not math.isinf(price):
+                    prices[sym] = price
+                else:
+                    logger.debug(f"⚠️ Harga tidak valid untuk {sym}: {price}")
+            except Exception as e:
+                logger.debug(f"⚠️ Gagal mengambil harga {sym}: {e}")
+        return prices
+
+    # 🔥 PRIVATE: Update peak equity di sentry
+    async def _update_peak_equity(self):
+        """Hitung equity terkini dan beri tahu sentry untuk drawdown tracking."""
+        all_symbols = {pos.symbol for pos in self.inventory.get_all_positions()}
+        market_prices = self._get_market_prices(all_symbols)
+        equity = self.inventory.get_equity(market_prices)
+        self.sentry.update_peak_equity(equity)
 
     def _handle_execution_report(self, report: ExecutionReport):
         # 1. Update Tracking
@@ -129,11 +212,13 @@ class OrderManagementSystem:
                     self.accountant.on_fill(fill)
                     
                     logger.info(f"💰 Processed Fill: {fill.side.value} {fill.quantity} {fill.symbol} @ {fill.price}")
-# --- FACTORY FUNCTION (YANG HILANG SEBELUMNYA) ---
+
+# --- FACTORY FUNCTION (UNCHANGED) ---
 def create_oms(broker, market_data=None, risk_check=None, mode=OMSMode.RESEARCH, **kwargs) -> Result[OrderManagementSystem, str]:
     try:
         cfg = OMSConfig(mode=mode, **kwargs)
-        if cfg.validate().is_err(): return Err("Invalid Config")
+        if cfg.validate().is_err():
+            return Err("Invalid Config")
         return Ok(OrderManagementSystem(broker, market_data, risk_check, cfg))
     except Exception as e:
         return Err(str(e))

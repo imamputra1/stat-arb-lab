@@ -22,7 +22,7 @@ from .components import (
 )
 
 __all__ = [
-    'OMSFacade',              # <--- Pastikan ini ada
+    'OMSFacade',              # <--- Tetap diekspor
     'OrderManagementSystem',
     'OMSConfig',
     'OMSMode',
