@@ -2,7 +2,9 @@
 PURE REPLAY STREAMER
 Location: live/stream/replay.py
 Desc: Pemutar data historis murni yang patuh pada Protocol Aggregator.
-      Pipeline: Parquet -> Raw Tick -> Aggregator -> Candle -> MarketObservation.
+      FIX: 
+      1. ZeroDivisionError pada dataset kecil.
+      2. Handling timestamp float/int yang lebih robust.
 """
 
 import time
@@ -24,8 +26,7 @@ logger = logging.getLogger("Orca.Stream.Replay")
 class ReplayStreamer:
     """
     Simulasi Exchange + Aggregator.
-    Membaca data mentah, mengubahnya menjadi tick, lalu mengagregasikannya menjadi candle
-    sebelum dikirim ke Engine.
+    Membaca data mentah, mengubahnya menjadi tick, lalu mengagregasikannya menjadi candle.
     """
     
     def __init__(self, scenario_config: Dict[str, Any], data_path: str = "data/raw"):
@@ -52,14 +53,13 @@ class ReplayStreamer:
             logger.critical(f"❌ FATAL: Gagal memuat data replay. {e}")
             self.df = None
             
-        # 2. INIT AGGREGATORS (60s Interval)
+        # 2. INIT AGGREGATORS
+        # Kita set interval 60 detik.
+        # NOTE: Aggregator "Industrial" harusnya pintar mendeteksi ms vs sec.
         self.agg_target = create_candle_aggregator(interval_seconds=60)
         self.agg_ref = create_candle_aggregator(interval_seconds=60)
 
     def stream(self, delay_sec: float = 0.0) -> Generator[MarketObservation, None, None]:
-        """
-        Yields MarketObservation (Candle Data) ke Engine.
-        """
         if self.df is None or self.df.empty:
             logger.error("🛑 Stream Aborted: No Data.")
             return
@@ -68,17 +68,24 @@ class ReplayStreamer:
         logger.info(f"▶️  START STREAM: {total_ticks} raw ticks queued.")
 
         records = self.df.to_dict('records')
-
-        log_interval = max(1, total_ticks//10)
-
         
+        # [FIX 1] Safe Log Interval
+        # Jika data < 10, jangan log progress (hindari mod by zero)
+        # Jika data banyak, log setiap 10%
+        log_interval = max(1, total_ticks // 10)
+        should_log = total_ticks > 10
+
         for i, row in enumerate(records):
-            ts = int(row['timestamp'])
+            # [FIX 2] Robust Timestamp Parsing
+            # Pastikan timestamp jadi int (ms)
+            try:
+                ts = int(row['timestamp'])
+            except (ValueError, TypeError):
+                continue
             
-            # Gunakan Source Futures agar Engine menganggap ini data Live
             src = DataSource.BINANCE_FUTURES
 
-            # --- A. CREATE TICKS (Result Wrapper) ---
+            # --- A. CREATE TICKS ---
             res_target = create_market_tick(
                 timestamp=ts,
                 symbol=self.target_pair,
@@ -95,7 +102,7 @@ class ReplayStreamer:
                 source=src
             )
 
-            # Validasi & Unwrap (Skip jika data cacat)
+            # Validasi & Unwrap
             if res_target.is_err() or res_ref.is_err():
                 continue
 
@@ -103,12 +110,11 @@ class ReplayStreamer:
             tick_ref = res_ref.unwrap()
 
             # --- B. FEED AGGREGATOR ---
-            # Menggunakan method .add_tick() sesuai Protocol
             candle_target = self.agg_target.add_tick(tick_target)
             candle_ref = self.agg_ref.add_tick(tick_ref)
 
-            # --- C. CHECK OUTPUT & YIELD ---
-            # Hanya yield jika Aggregator selesai membentuk candle penuh
+            # --- C. CHECK OUTPUT ---
+            # Hanya yield jika KEDUA aggregator sudah closing candle (Synchronized)
             if candle_target and candle_ref:
                 obs = MarketObservation(
                     timestamp=ts,
@@ -123,12 +129,11 @@ class ReplayStreamer:
                 )
                 yield obs
             
-            # Speed Control
             if delay_sec > 0:
                 time.sleep(delay_sec)
                 
-            # Log Progress
-            if total_ticks > 10 and i % log_interval == 0:
+            # [FIX 1 Applied] Logging aman
+            if should_log and i > 0 and i % log_interval == 0:
                 logger.info(f"⏳ Progress: {(i/total_ticks)*100:.0f}%")
 
         logger.info("🏁 REPLAY FINISHED.")
