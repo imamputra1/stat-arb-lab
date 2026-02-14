@@ -84,7 +84,6 @@ class ExecutionSimulator:
     # =========================================================
     # THE TORMENTOR INTERFACE (REGIME SWITCHING)
     # =========================================================
-    
     def set_regime(self, regime: MarketRegime):
         """
         Mengubah cuaca pasar secara instan.
@@ -122,6 +121,7 @@ class ExecutionSimulator:
             self._slippage_multiplier = 20.0  
             
         logger.warning(f"⚠️ MARKET REGIME CHANGED TO: {regime.value}")
+
 
     # =========================================================
     # IMPLEMENTASI BROKER PROTOCOL
