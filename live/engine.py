@@ -1,449 +1,370 @@
+# live/engine.py
 """
-Unit Tests for Storage Drivers
-Location: tests/unit/core/data/storage/test_storage.py
-Desc: Menguji InMemoryStorage dan RedisStorage menggunakan Result pattern.
-      Untuk Redis, menggunakan mock redis.asyncio.Redis.
+LIVE TRADING ENGINE
+Location: live/engine.py
+Desc: Central orchestration engine. Loads config, initializes components,
+      replays market data, runs strategy, submits orders via OMS.
+      Supports PAPER mode using ExecutionSimulator.
 """
 
-import pytest
 import asyncio
-import json
-from unittest.mock import AsyncMock, patch
+import time
+from typing import Optional, Dict, Any
+from core.signals import MarketObservation
+import pandas as pd
 
-from core.shared.result import is_ok, is_err
-from core.data.storage.drivers.memory import InMemoryStorage
-from core.data.storage.drivers.redis_driver import RedisStorage
-from core.data.storage import (
-    create_memory_storage,
-    create_redis_storage,
-    create_redis_storage_and_test,
-)
+from core.shared.result import match_result
+from core.shared.utils import get_logger
 
+from core.execution.types import OrderSide
+from core.execution.oms import OMSFacade, OMSMode
+from core.execution.simulator import ExecutionSimulator, SimulatorConfig
 
-# =============================================================================
-# FIXTURES
-# =============================================================================
+from core.signals.factory import create_strategy
+from core.signals.types import SignalType
 
-@pytest.fixture
-def memory_storage():
-    """Fixture untuk InMemoryStorage."""
-    return InMemoryStorage()
+from .config import DATA_CONFIG, STRATEGY_CONFIG, EXECUTION_CONFIG, RISK_CONFIG
+
+logger = get_logger("live.engine")
 
 
-@pytest.fixture
-def mock_redis():
-    """Mock redis.asyncio.Redis dengan AsyncMock."""
-    mock = AsyncMock()
-    # Konfigurasi default untuk method yang umum
-    mock.ping.return_value = True
-    mock.xadd.return_value = "123-0"
-    mock.xrange.return_value = []
-    mock.xtrim.return_value = 0
-    mock.publish.return_value = 1
-    mock.set.return_value = True
-    mock.setex.return_value = True
-    mock.get.return_value = None
-    mock.delete.return_value = 1
-    mock.expire.return_value = True
-    mock.flushall.return_value = True
-    return mock
+class LiveEngine:
+    """
+    Main orchestration engine for live/paper trading.
+    """
 
+    def __init__(
+        self,
+        data_config: Dict[str, Any],
+        strategy_config: Dict[str, Any],
+        execution_config: Dict[str, Any],
+        risk_config: Dict[str, Any],
+    ):
+        self.data_config = data_config
+        self.strategy_config = strategy_config
+        self.execution_config = execution_config
+        self.risk_config = risk_config
 
-@pytest.fixture
-def redis_storage(mock_redis):
-    """Fixture untuk RedisStorage dengan mock redis."""
-    with patch('redis.asyncio.Redis', return_value=mock_redis):
-        storage = RedisStorage(host='localhost', port=6379, db=0)
-        # Biarkan _redis tetap None, akan dibuat oleh _ensure_connection
-        yield storage
+        # State
+        self._running = False
+        self._strategy = None
+        self._oms: Optional[OMSFacade] = None
+        self._simulator: Optional[ExecutionSimulator] = None
+        self._data: Optional[pd.DataFrame] = None
+        self._current_index = 0
+        self._peak_equity = 0.0
+        self._warmup_ticks = data_config.get("warmup_ticks", 10)
+        self._replay_speed = data_config.get("replay_speed", 0.001)
 
+    async def start(self):
+        """Load data, initialize components, and run the main loop."""
+        logger.info("🚀 Starting Live Engine...")
+        self._running = True
 
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
+        # 1. Load market data
+        if not self._load_data():
+            logger.error("❌ Data loading failed. Aborting.")
+            return
 
-async def assert_ok(result, expected_value=None):
-    """Helper untuk memeriksa Result Ok dan nilai opsional."""
-    assert is_ok(result)
-    if expected_value is not None:
-        assert result.unwrap() == expected_value
+        # 2. Initialize execution environment (simulator + OMS)
+        if not await self._init_execution():
+            logger.error("❌ Execution initialization failed. Aborting.")
+            return
 
+        # 3. Initialize strategy via factory
+        if not self._init_strategy():
+            logger.error("❌ Strategy initialization failed. Aborting.")
+            return
 
-async def assert_err(result, error_substring=None):
-    """Helper untuk memeriksa Result Err."""
-    assert is_err(result)
-    if error_substring:
-        err_msg = result.unwrap_err()
-        assert error_substring in err_msg
+        # 4. Warmup: feed initial ticks without trading
+        logger.info(f"🔥 Warmup for {self._warmup_ticks} ticks...")
+        for i in range(min(self._warmup_ticks, len(self._data))):
+            tick = self._data.iloc[i]
+            self._feed_tick(tick)
+            self._current_index = i + 1
 
+        # 5. Main loop
+        logger.info("⚙️ Entering main trading loop...")
+        await self._main_loop()
 
-# =============================================================================
-# IN-MEMORY STORAGE TESTS
-# =============================================================================
+        # 6. Cleanup
+        await self._shutdown()
 
-class TestInMemoryStorage:
-    """Test suite untuk InMemoryStorage."""
+    # ----------------------------------------------------------------------
+    # DATA LOADING
+    # ----------------------------------------------------------------------
+    def _load_data(self) -> bool:
+        """Load target and reference parquet files, align them."""
+        try:
+            path_target = self.data_config["path_target"]
+            path_ref = self.data_config["path_ref"]
 
-    @pytest.mark.asyncio
-    async def test_stream_add_and_read(self, memory_storage):
-        """Test menambah dan membaca stream."""
-        # Add entry
-        res = await memory_storage.stream_add("test_stream", {"price": 100, "vol": 10})
-        await assert_ok(res)
-        entry_id = res.unwrap()
-        assert isinstance(entry_id, str)
+            logger.info(f"Loading target data from {path_target}")
+            df_target = pd.read_parquet(path_target)
+            logger.info(f"Loading reference data from {path_ref}")
+            df_ref = pd.read_parquet(path_ref)
 
-        # Read all
-        res = await memory_storage.stream_read("test_stream")
-        await assert_ok(res)
-        entries = res.unwrap()
-        assert len(entries) == 1
-        assert entries[0][0] == entry_id
-        assert entries[0][1] == {"price": 100, "vol": 10}
+            # Ensure timestamp column exists and sort
+            if "timestamp" not in df_target.columns:
+                # Try to infer index as timestamp
+                if isinstance(df_target.index, pd.DatetimeIndex):
+                    df_target = df_target.reset_index()
+                else:
+                    logger.error("Target data missing 'timestamp' column")
+                    return False
 
-        # Read with count
-        res = await memory_storage.stream_read("test_stream", count=1)
-        await assert_ok(res)
-        assert len(res.unwrap()) == 1
+            if "timestamp" not in df_ref.columns:
+                if isinstance(df_ref.index, pd.DatetimeIndex):
+                    df_ref = df_ref.reset_index()
+                else:
+                    logger.error("Reference data missing 'timestamp' column")
+                    return False
 
-        # Read empty stream
-        res = await memory_storage.stream_read("nonexistent")
-        await assert_ok(res)
-        assert res.unwrap() == []
+            # Rename close columns to avoid conflict
+            df_target = df_target[["timestamp", "close"]].rename(columns={"close": "close_target"})
+            df_ref = df_ref[["timestamp", "close"]].rename(columns={"close": "close_ref"})
 
-    @pytest.mark.asyncio
-    async def test_stream_trim(self, memory_storage):
-        """Test trim stream."""
-        for i in range(10):
-            await memory_storage.stream_add("test_stream", {"i": i})
-        res = await memory_storage.stream_trim("test_stream", maxlen=5)
-        await assert_ok(res, 5)  # 5 entries deleted
+            # Merge on timestamp (inner join to ensure alignment)
+            df = pd.merge(df_target, df_ref, on="timestamp", how="inner")
+            df.sort_values("timestamp", inplace=True)
+            df.reset_index(drop=True, inplace=True)
 
-        res = await memory_storage.stream_read("test_stream")
-        entries = res.unwrap()
-        assert len(entries) == 5
-        # entries are oldest first? In our simple impl, we append, and trim from beginning.
-        # So remaining are last 5 entries, with i starting from 5.
-        assert entries[0][1]["i"] == 5
+            self._data = df
+            logger.info(f"✅ Data loaded: {len(df)} ticks")
+            return True
 
-        # Trim to larger than current
-        res = await memory_storage.stream_trim("test_stream", maxlen=10)
-        await assert_ok(res, 0)
+        except Exception as e:
+            logger.error(f"Data load failed: {e}")
+            return False
 
-    @pytest.mark.asyncio
-    async def test_pubsub(self, memory_storage):
-        """Test publish dan subscribe."""
-        messages = []
+    # ----------------------------------------------------------------------
+    # EXECUTION INITIALIZATION
+    # ----------------------------------------------------------------------
+    async def _init_execution(self) -> bool:
+        """Initialize simulator and OMS facade."""
+        try:
+            # Create simulator config from execution config
+            sim_config = SimulatorConfig(
+                initial_cash=self.execution_config.get("initial_cash", 100_000.0),
+                base_currency="USDT",
+                fee_rate_maker=self.execution_config.get("maker_fee", 0.0002),
+                fee_rate_taker=self.execution_config.get("taker_fee", 0.0004),
+                slippage_std_bps=self.execution_config.get("slippage", 0.0001) * 10000,  # convert to bps
+            )
+            self._simulator = ExecutionSimulator(config=sim_config)
+            logger.info("✅ Simulator created")
 
-        async def subscriber():
-            async for channel, msg in memory_storage.subscribe("test_channel"):
-                messages.append((channel, msg))
-                if len(messages) >= 2:
-                    break
+            # Parameter yang valid untuk OMSConfig (lihat core/execution/oms/system.py)
+            allowed_oms_params = {
+                'max_open_orders',
+                'max_notional_per_order',
+                'order_timeout_seconds',
+                'default_tif',
+                'auto_reconcile',
+                'validate_risk',
+                'oms_id'
+            }
 
-        task = asyncio.create_task(subscriber())
-        await asyncio.sleep(0.05)  # biarkan subscriber terdaftar
+            mode = OMSMode.PAPER if self.execution_config.get("mode") == "PAPER" else OMSMode.LIVE
 
-        res = await memory_storage.publish("test_channel", "hello")
-        await assert_ok(res, 1)
+            # Filter hanya parameter yang diizinkan
+            oms_kwargs = {k: v for k, v in self.execution_config.items() 
+                          if k in allowed_oms_params}
 
-        res = await memory_storage.publish("test_channel", "world")
-        await assert_ok(res, 1)
+            oms_result = OMSFacade.create(
+                broker=self._simulator,
+                market_data=None,
+                risk_check=None,
+                mode=mode,
+                **oms_kwargs
+            )
 
-        await task
+            if oms_result.is_err():
+                logger.error(f"OMS creation failed: {oms_result.unwrap_err()}")
+                return False
 
-        assert len(messages) == 2
-        assert messages[0] == ("test_channel", "hello")
-        assert messages[1] == ("test_channel", "world")
+            self._oms = oms_result.unwrap()
+            await self._oms.start()
+            logger.info("✅ Execution environment ready.")
+            return True
 
-    @pytest.mark.asyncio
-    async def test_kv_set_get_delete(self, memory_storage):
-        """Test key-value operations."""
-        res = await memory_storage.set("key1", {"value": 123})
-        await assert_ok(res, None)
+        except Exception as e:
+            logger.error(f"Execution init error: {e}", exc_info=True)
+            return False
 
-        res = await memory_storage.get("key1")
-        await assert_ok(res, {"value": 123})
+    # ----------------------------------------------------------------------
+    # STRATEGY INITIALIZATION
+    # ----------------------------------------------------------------------
+    def _init_strategy(self) -> bool:
+        """Instantiate the strategy using the factory with config."""
+        try:
+            strat_result = create_strategy(self.strategy_config)
+            if strat_result.is_err():
+                logger.error(f"Strategy creation failed: {strat_result.unwrap_err()}")
+                return False
 
-        res = await memory_storage.delete("key1")
-        await assert_ok(res, True)
+            self._strategy = strat_result.unwrap()
+            logger.info(f"✅ Strategy '{self.strategy_config.get('name')}' initialized.")
+            return True
 
-        res = await memory_storage.get("key1")
-        await assert_ok(res, None)
+        except Exception as e:
+            logger.error(f"Strategy init error: {e}")
+            return False
 
-        res = await memory_storage.delete("key2")
-        await assert_ok(res, False)
+    # ----------------------------------------------------------------------
+    # MAIN LOOP
+    # ----------------------------------------------------------------------
+    async def _main_loop(self):
+        """Iterate through data ticks, update strategy, submit orders."""
+        while self._running and self._current_index < len(self._data):
+            tick_start = time.monotonic()
 
-    @pytest.mark.asyncio
-    async def test_set_with_ttl_and_expire(self, memory_storage):
-        """Test TTL dan expire."""
-        res = await memory_storage.set_with_ttl("temp", "value", 1)
-        await assert_ok(res)
+            # Get current tick
+            row = self._data.iloc[self._current_index]
+            timestamp = row["timestamp"]
+            # Convert timestamp to milliseconds if needed (assuming it's in seconds or datetime)
+            if isinstance(timestamp, pd.Timestamp):
+                ts_ms = int(timestamp.timestamp() * 1000)
+            else:
+                # assume already ms or seconds? we'll convert to ms
+                ts_ms = int(timestamp) if timestamp > 1e11 else int(timestamp * 1000)
 
-        res = await memory_storage.get("temp")
-        await assert_ok(res, "value")
+            # Feed tick to strategy
+            signal = self._feed_tick(row)
 
-        res = await memory_storage.expire("temp", 2)
-        await assert_ok(res, True)
+            # Update simulator's price (so that orders execute at correct price)
+            # Simulator uses _last_prices dict; we set price for target symbol
+            symbol_traded = self.data_config["symbol_traded"]
+            self._simulator.update_price(symbol_traded, row["close_target"])
 
-        await asyncio.sleep(1.5)
-        res = await memory_storage.get("temp")
-        await assert_ok(res, "value")
-
-        await asyncio.sleep(1.0)
-        res = await memory_storage.get("temp")
-        await assert_ok(res, None)
-
-        res = await memory_storage.expire("nonexistent", 10)
-        await assert_ok(res, False)
-
-    @pytest.mark.asyncio
-    async def test_health_check(self, memory_storage):
-        """Health check selalu True."""
-        res = await memory_storage.health_check()
-        await assert_ok(res, True)
-
-    @pytest.mark.asyncio
-    async def test_flushall(self, memory_storage):
-        """Flushall membersihkan semua data."""
-        await memory_storage.set("a", 1)
-        await memory_storage.stream_add("s", {"x": 1})
-
-        await memory_storage.flushall()
-
-        res = await memory_storage.get("a")
-        await assert_ok(res, None)
-
-        res = await memory_storage.stream_read("s")
-        await assert_ok(res, [])
-
-
-# =============================================================================
-# REDIS STORAGE TESTS (with mocks)
-# =============================================================================
-
-class TestRedisStorage:
-    """Test suite untuk RedisStorage dengan mock redis."""
-
-    @pytest.mark.asyncio
-    async def test_ensure_connection_success(self, redis_storage, mock_redis):
-        """Test koneksi sukses."""
-        res = await redis_storage._ensure_connection()
-        await assert_ok(res)
-        mock_redis.ping.assert_called_once()
-        assert redis_storage._redis is mock_redis
-
-    @pytest.mark.asyncio
-    async def test_ensure_connection_failure(self, mock_redis):
-        """Test koneksi gagal."""
-        mock_redis.ping.side_effect = ConnectionError("Cannot connect")
-        with patch('redis.asyncio.Redis', return_value=mock_redis):
-            storage = RedisStorage()
-            res = await storage._ensure_connection()
-            await assert_err(res, "Cannot connect")
-
-    @pytest.mark.asyncio
-    async def test_stream_add(self, redis_storage, mock_redis):
-        """Test stream_add sukses."""
-        mock_redis.xadd.return_value = "123456789-0"
-        res = await redis_storage.stream_add("mystream", {"price": 100, "vol": 10})
-        await assert_ok(res, "123456789-0")
-        # Ping dipanggil sekali karena koneksi pertama
-        mock_redis.ping.assert_called_once()
-        mock_redis.xadd.assert_called_once_with(
-            "mystream",
-            {"price": "100", "vol": "10"},
-            maxlen=None,
-            approximate=False
-        )
-
-    @pytest.mark.asyncio
-    async def test_stream_add_with_maxlen(self, redis_storage, mock_redis):
-        """Test stream_add dengan maxlen."""
-        # Reset mock agar tidak terpengaruh ping dari test sebelumnya
-        mock_redis.reset_mock()
-        mock_redis.xadd.return_value = "id"
-        res = await redis_storage.stream_add("s", {"a": 1}, maxlen=100, approximate=True)
-        await assert_ok(res, "id")
-        mock_redis.xadd.assert_called_once_with(
-            "s", {"a": "1"}, maxlen=100, approximate=True
-        )
-
-    @pytest.mark.asyncio
-    async def test_stream_read(self, redis_storage, mock_redis):
-        """Test stream_read."""
-        mock_redis.reset_mock()
-        mock_redis.xrange.return_value = [
-            ("1-0", {"price": "100", "vol": "10"}),
-            ("2-0", {"price": "101", "vol": "11"}),
-        ]
-        res = await redis_storage.stream_read("s", start="-", end="+", count=2)
-        await assert_ok(res)
-        entries = res.unwrap()
-        assert len(entries) == 2
-        assert entries[0][0] == "1-0"
-        assert entries[0][1] == {"price": 100, "vol": 10}
-        assert entries[1][1] == {"price": 101, "vol": 11}
-        mock_redis.xrange.assert_called_once_with("s", "-", "+", count=2)
-
-    @pytest.mark.asyncio
-    async def test_stream_trim(self, redis_storage, mock_redis):
-        """Test stream_trim."""
-        mock_redis.reset_mock()
-        mock_redis.xtrim.return_value = 5
-        res = await redis_storage.stream_trim("s", 10, approximate=True)
-        await assert_ok(res, 5)
-        mock_redis.xtrim.assert_called_once_with("s", 10, approximate=True)
-
-    @pytest.mark.asyncio
-    async def test_publish(self, redis_storage, mock_redis):
-        """Test publish."""
-        mock_redis.reset_mock()
-        mock_redis.publish.return_value = 2
-        res = await redis_storage.publish("channel", "message")
-        await assert_ok(res, 2)
-        mock_redis.publish.assert_called_once_with("channel", "message")
-
-    @pytest.mark.asyncio
-    async def test_subscribe(self, redis_storage, mock_redis):
-        """Test subscribe (mocked pubsub)."""
-        # Set _redis manual agar tidak perlu koneksi
-        redis_storage._redis = mock_redis
-        mock_pubsub = AsyncMock()
-        mock_pubsub.subscribe.return_value = None
-        mock_pubsub.listen.return_value.__aiter__.return_value = [
-            {"type": "message", "channel": "ch", "data": "msg1"},
-            {"type": "message", "channel": "ch", "data": "msg2"},
-        ]
-        mock_pubsub.unsubscribe.return_value = None
-        mock_pubsub.close.return_value = None
-
-        mock_redis.pubsub.return_value = mock_pubsub
-
-        messages = []
-        async for channel, msg in redis_storage.subscribe("ch"):
-            messages.append((channel, msg))
-            if len(messages) >= 2:
+            # Check risk limits before acting on signal
+            if not await self._check_risk():
+                logger.warning("⛔ Risk limit breached. Stopping trading.")
                 break
 
-        assert messages == [("ch", "msg1"), ("ch", "msg2")]
-        mock_pubsub.subscribe.assert_called_once_with("ch")
-        mock_pubsub.unsubscribe.assert_called_once_with("ch")
-        mock_pubsub.close.assert_called_once()
+            # If signal is actionable, submit order
+            if signal and signal.signal_type in (SignalType.BUY, SignalType.SELL):
+                await self._submit_order(signal, row["close_target"])
 
-    @pytest.mark.asyncio
-    async def test_set(self, redis_storage, mock_redis):
-        """Test set."""
-        mock_redis.reset_mock()
-        res = await redis_storage.set("key", {"nested": [1, 2]})
-        await assert_ok(res, None)
-        mock_redis.set.assert_called_once_with("key", json.dumps({"nested": [1, 2]}))
+            # Poll for order updates (optional, but good for simulation)
+            if self._current_index % 10 == 0:
+                await self._oms.refresh_orders()
 
-    @pytest.mark.asyncio
-    async def test_set_with_ttl(self, redis_storage, mock_redis):
-        """Test set_with_ttl."""
-        mock_redis.reset_mock()
-        res = await redis_storage.set_with_ttl("key", "value", 60)
-        await assert_ok(res, None)
-        mock_redis.setex.assert_called_once_with("key", 60, json.dumps("value"))
+            # Update peak equity for drawdown tracking
+            await self._update_peak_equity()
 
-    @pytest.mark.asyncio
-    async def test_get(self, redis_storage, mock_redis):
-        """Test get."""
-        mock_redis.reset_mock()
-        mock_redis.get.return_value = json.dumps({"data": 123})
-        res = await redis_storage.get("key")
-        await assert_ok(res, {"data": 123})
-        mock_redis.get.assert_called_once_with("key")
+            # Control replay speed
+            elapsed = time.monotonic() - tick_start
+            sleep_time = max(0, self._replay_speed - elapsed)
+            if sleep_time > 0:
+                await asyncio.sleep(sleep_time)
 
-        mock_redis.get.return_value = None
-        res = await redis_storage.get("nonexistent")
-        await assert_ok(res, None)
+            self._current_index += 1
 
-        mock_redis.get.return_value = "plain string"
-        res = await redis_storage.get("key")
-        await assert_ok(res, "plain string")
+        logger.info("🏁 Main loop finished.")
 
-    @pytest.mark.asyncio
-    async def test_delete(self, redis_storage, mock_redis):
-        """Test delete."""
-        mock_redis.reset_mock()
-        mock_redis.delete.return_value = 1
-        res = await redis_storage.delete("key")
-        await assert_ok(res, True)
-        mock_redis.delete.assert_called_once_with("key")
+    def _feed_tick(self, row: pd.Series):
+        """Feed a single tick to the strategy and return the signal."""
+        symbol_traded = self.data_config["symbol_traded"]
+        base = symbol_traded.split('/')[0]  # e.g., DOGE
+        timestamp = row["timestamp"]
+        if isinstance(timestamp, pd.Timestamp):
+           ts_ms = int(timestamp.timestamp() * 1000)
+        else:
+        # if already ms (> year 2000 in ms) or seconds
+            ts_ms = int(timestamp) if timestamp > 1e11 else int(timestamp * 1000)
 
-        mock_redis.delete.return_value = 0
-        res = await redis_storage.delete("key")
-        await assert_ok(res, False)
+        data = {
+            f"close_{base}": float(row["close_target"]),
+            "close_BTC": float(row["close_ref"]),
+        }
 
-    @pytest.mark.asyncio
-    async def test_expire(self, redis_storage, mock_redis):
-        """Test expire."""
-        mock_redis.reset_mock()
-        mock_redis.expire.return_value = True
-        res = await redis_storage.expire("key", 30)
-        await assert_ok(res, True)
-        mock_redis.expire.assert_called_once_with("key", 30)
+        obs = MarketObservation(
+            timestamp=ts_ms,
+            data=data,
+            symbol=symbol_traded,
+            source="parquet"
+        )
+        signal_result = self._strategy.evaluate_state(obs)
+        if signal_result.is_err():
+            logger.debug(f"Strategy error: {signal_result.unwrap_err()}")
+            return None
+        return signal_result.unwrap()
 
-        mock_redis.expire.return_value = False
-        res = await redis_storage.expire("nonexistent", 30)
-        await assert_ok(res, False)
+    async def _submit_order(self, signal, current_price: float):
+        """Convert signal to order and submit via OMS."""
+        # Determine side and quantity
+        if signal.signal_type == SignalType.BUY:
+            side = OrderSide.BUY
+        elif signal.signal_type == SignalType.SELL:
+            side = OrderSide.SELL
+        else:
+            return  # not entry
 
-    @pytest.mark.asyncio
-    async def test_health_check(self, redis_storage, mock_redis):
-        """Test health_check."""
-        mock_redis.reset_mock()
-        res = await redis_storage.health_check()
-        await assert_ok(res, True)
-        mock_redis.ping.assert_called_once()
+        # Use fixed quantity for now; could be dynamic from strategy's position sizing
+        # For simplicity, use a fixed fraction of max position from config
+        max_pos = self.strategy_config.get("signal_params", {}).get("max_position", 1000.0)
+        quantity = max_pos * 0.1  # 10% of max as default size
 
-    @pytest.mark.asyncio
-    async def test_flushall(self, redis_storage, mock_redis):
-        """Test flushall."""
-        mock_redis.reset_mock()
-        res = await redis_storage.flushall()
-        await assert_ok(res, None)
-        mock_redis.flushall.assert_called_once()
+        # Use market orders
+        symbol = self.data_config["symbol_traded"]
+        if side == OrderSide.BUY:
+            result = await self._oms.buy_market(symbol, quantity)
+        else:
+            result = await self._oms.sell_market(symbol, quantity)
+
+        match_result(
+            result,
+            on_ok=lambda report: logger.info(
+                f"✅ Order {report.order.order_id} executed: fills={len(report.fills)}"
+            ),
+            on_err=lambda err: logger.error(f"❌ Order failed: {err}"),
+        )
+
+    async def _check_risk(self) -> bool:
+        """Check global risk limits (kill switch, drawdown)."""
+        if self._oms.is_kill_switch_engaged():
+            logger.warning(f"Kill switch engaged: {self._oms._oms.sentry._kill_reason}")
+            return False
+
+        # Drawdown check
+        equity = self._oms.get_equity()
+        if equity > self._peak_equity:
+            self._peak_equity = equity
+        if self._peak_equity > 0:
+            drawdown = (self._peak_equity - equity) / self._peak_equity
+            if drawdown > self.risk_config.get("max_drawdown", 0.15):
+                logger.error(f"Max drawdown exceeded: {drawdown:.2%}")
+                self._oms.engage_kill_switch("Max drawdown exceeded")
+                return False
+        return True
+
+    async def _update_peak_equity(self):
+        """Update peak equity in OMS sentry."""
+        equity = self._oms.get_equity()
+        self._oms._oms.sentry.update_peak_equity(equity)
+
+    async def _shutdown(self):
+        """Graceful shutdown."""
+        logger.info("🛑 Shutting down engine...")
+        if self._oms:
+            await self._oms.stop()
+        logger.info("✅ Shutdown complete.")
 
 
-# =============================================================================
-# FACTORY TESTS
-# =============================================================================
+# ==============================================================================
+# Entry point
+# ==============================================================================
+async def main():
+    """Load config and run engine."""
+    engine = LiveEngine(
+        data_config=DATA_CONFIG,
+        strategy_config=STRATEGY_CONFIG,
+        execution_config=EXECUTION_CONFIG,
+        risk_config=RISK_CONFIG,
+    )
+    await engine.start()
 
-class TestStorageFactory:
-    """Test factory functions."""
 
-    def test_create_memory_storage(self):
-        """Factory memory selalu sukses."""
-        res = create_memory_storage()
-        assert is_ok(res)
-        storage = res.unwrap()
-        assert isinstance(storage, InMemoryStorage)
-
-    def test_create_redis_storage(self, mock_redis):
-        """Factory redis tanpa test koneksi."""
-        with patch('redis.asyncio.Redis', return_value=mock_redis):
-            res = create_redis_storage(host="test")
-            assert is_ok(res)
-            storage = res.unwrap()
-            assert isinstance(storage, RedisStorage)
-            # Tidak perlu test koneksi
-
-    @pytest.mark.asyncio
-    async def test_create_redis_storage_and_test_success(self, mock_redis):
-        """Factory dengan test koneksi sukses."""
-        with patch('redis.asyncio.Redis', return_value=mock_redis):
-            res = await create_redis_storage_and_test(host="test")
-            assert is_ok(res)
-            storage = res.unwrap()
-            mock_redis.ping.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_create_redis_storage_and_test_failure(self, mock_redis):
-        """Factory dengan test koneksi gagal."""
-        mock_redis.ping.side_effect = ConnectionError("fail")
-        with patch('redis.asyncio.Redis', return_value=mock_redis):
-            res = await create_redis_storage_and_test(host="test")
-            assert is_err(res)
-            assert "Redis health check failed" in res.unwrap_err()
+if __name__ == "__main__":
+    asyncio.run(main())
