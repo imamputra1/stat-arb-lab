@@ -304,7 +304,7 @@ class LiveEngine:
         # Use fixed quantity for now; could be dynamic from strategy's position sizing
         # For simplicity, use a fixed fraction of max position from config
         max_pos = self.strategy_config.get("signal_params", {}).get("max_position", 1000.0)
-        quantity = max_pos * 0.1  # 10% of max as default size
+        quantity = max_pos * 0.001  # 10% of max as default size
 
         # Use market orders
         symbol = self.data_config["symbol_traded"]

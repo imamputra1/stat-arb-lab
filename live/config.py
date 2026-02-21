@@ -16,8 +16,8 @@ DATA_CONFIG = {
     "path_ref":    "data/raw/symbol=BTC-USDT/interval=1m/year=2023/month=10/data.parquet",
     
     "symbol_traded": "DOGE/USDT", # Aset yang dieksekusi OMS
-    "replay_speed": 0.001,        # Delay antar tick (0.001s = Fast Replay)
-    "warmup_ticks": 10           # Jumlah data awal untuk pemanasan Kalman Filter
+    "replay_speed": 0.01,        # Delay antar tick (0.001s = Fast Replay)
+    "warmup_ticks": 50          # Jumlah data awal untuk pemanasan Kalman Filter
 }
 
 # ==============================================================================
@@ -33,14 +33,14 @@ STRATEGY_CONFIG = {
         "name": "DOGE_Sniper_V1",
         
         # SENSITIVITAS (Agresif vs Konservatif)
-        "entry_z_score": 1.5,     # Masuk saat harga menyimpang 2 Standar Deviasi (95% confidence)
+        "entry_z_score": 1.6,     # Masuk saat harga menyimpang 2 Standar Deviasi (95% confidence)
         "exit_z_score": 0.0,      # Keluar saat harga kembali ke Mean (Wajar)
         
         # RISK MANAGEMENT (Safety Net)
         "stop_loss_z": 10.0,       # Cut loss jika spread melebar ekstrem (>4 sigma)
         
         # SIZING & HEDGING
-        "max_position": 1000.0,   # Max Holding (Unit Asset)
+        "max_position": 10.0,   # Max Holding (Unit Asset)
         "hedge_ratio": 1.0,       # Estimasi Beta awal (DOGE vs BTC)
         
         # DYNAMIC WINDOW
@@ -53,12 +53,12 @@ STRATEGY_CONFIG = {
         # 1. MEASUREMENT NOISE (R): "Seberapa percaya kita pada harga pasar saat ini?"
         #    - R Besar (> 0.5)  = Anggap pasar banyak noise -> Filter jadi lambat/smooth.
         #    - R Kecil (< 0.01) = Anggap pasar sangat akurat -> Filter jadi reaktif/gerigi.
-        "R": 0.005, 
+        "R": 0.05, 
 
         # 2. PROCESS NOISE (Q): "Seberapa cepat tren/korelasi aset berubah?"
         #    - Q Besar (> 1e-3)   = Menganggap tren labil -> Cepat adaptasi perubahan.
         #    - Q Kecil (< 1e-5)   = Menganggap tren stabil -> Filter kaku (Bagus untuk Mean Reversion).
-        "Q": 1e-4,
+        "Q": 1e-1,
         
         "initial_value": 0.0,     # Tebakan awal spread
         
