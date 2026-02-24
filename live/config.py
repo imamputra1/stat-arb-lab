@@ -17,7 +17,7 @@ DATA_CONFIG = {
     
     "symbol_traded": "DOGE/USDT", # Aset yang dieksekusi OMS
     "replay_speed": 0.01,        # Delay antar tick (0.001s = Fast Replay)
-    "warmup_ticks": 50          # Jumlah data awal untuk pemanasan Kalman Filter
+    "warmup_ticks": 5         # Jumlah data awal untuk pemanasan Kalman Filter
 }
 
 # ==============================================================================
@@ -33,7 +33,7 @@ STRATEGY_CONFIG = {
         "name": "DOGE_Sniper_V1",
         
         # SENSITIVITAS (Agresif vs Konservatif)
-        "entry_z_score": 1.6,     # Masuk saat harga menyimpang 2 Standar Deviasi (95% confidence)
+        "entry_z_score": 0.5,     # Masuk saat harga menyimpang 2 Standar Deviasi (95% confidence)
         "exit_z_score": 0.0,      # Keluar saat harga kembali ke Mean (Wajar)
         
         # RISK MANAGEMENT (Safety Net)
@@ -78,7 +78,7 @@ STRATEGY_CONFIG = {
 # ==============================================================================
 EXECUTION_CONFIG = {
     "mode": "PAPER",           # PAPER / LIVE
-    "initial_cash": 100_000.0, # Modal Awal (USD)
+    "initial_cash": 500.0, # Modal Awal (USD)
     
     # Fee Structure (Simulasi Binance VIP 0)
     "maker_fee": -0.0002,      # Rebate (jika ada, negatif berarti dapat duit)

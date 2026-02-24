@@ -125,11 +125,21 @@ class OrderManagementSystem:
 
     # 🔧 MODIFIED: Sekarang validasi state & rekonsiliasi accountant
     async def reconcile(self):
-        res = await self.broker.get_all_positions()
-        if res.is_ok():
+        res_pos = await self.broker.get_all_positions()
+
+        res_bal = None
+        if hasattr(self.broker, 'get_balance'):
+            res_bal = await self.broker.get_balance()
+        if res_pos.is_ok():
             async with self._lock:
-                self.inventory.sync_positions(res.unwrap())
+                self.inventory.sync_positions(res_pos.unwrap())
                 
+                if res_bal and res_bal.is_ok():
+                    balances = res_bal.unwrap()
+                    for currency, amount in balances.items():
+                        self.inventory._cash_balances[currency] = amount
+                        logger.info(f"💰 Saldo tersinkronisasi: {amount:,.2f}{currency}")
+
                 # 🔥 Validasi internal inventory
                 inv_state = self.inventory.validate_state()
                 if inv_state.is_err():

@@ -10,18 +10,18 @@ Desc: Central orchestration engine. Loads config, initializes components,
 import asyncio
 import time
 from typing import Optional, Dict, Any
-from core.signals import MarketObservation
 import pandas as pd
 
+from core.signals.types import MarketObservation, SignalType
 from core.shared.result import match_result
 from core.shared.utils import get_logger
 
 from core.execution.types import OrderSide
-from core.execution.oms import OMSFacade, OMSMode
+from core.execution.oms.facade import OMSFacade
+from core.execution.oms.system import OMSMode
 from core.execution.simulator import ExecutionSimulator, SimulatorConfig
 
 from core.signals.factory import create_strategy
-from core.signals.types import SignalType
 
 from .config import DATA_CONFIG, STRATEGY_CONFIG, EXECUTION_CONFIG, RISK_CONFIG
 
@@ -61,38 +61,35 @@ class LiveEngine:
         logger.info("🚀 Starting Live Engine...")
         self._running = True
 
-        # 1. Load market data
         if not self._load_data():
             logger.error("❌ Data loading failed. Aborting.")
             return
 
-        # 2. Initialize execution environment (simulator + OMS)
         if not await self._init_execution():
             logger.error("❌ Execution initialization failed. Aborting.")
             return
 
-        # 3. Initialize strategy via factory
         if not self._init_strategy():
             logger.error("❌ Strategy initialization failed. Aborting.")
             return
 
-        # 4. Warmup: feed initial ticks without trading
+        # =========================================================
+        # [SURGERY FIX 1]: Menggunakan Assert agar Pyright yakin 100%
+        # =========================================================
+        assert self._data is not None, "Data is missing after load"
+
         logger.info(f"🔥 Warmup for {self._warmup_ticks} ticks...")
-        for i in range(min(self._warmup_ticks, len(self._data))):
+        limit = min(self._warmup_ticks, len(self._data)) 
+        for i in range(limit):
             tick = self._data.iloc[i]
             self._feed_tick(tick)
             self._current_index = i + 1
 
-        # 5. Main loop
         logger.info("⚙️ Entering main trading loop...")
         await self._main_loop()
 
-        # 6. Cleanup
         await self._shutdown()
 
-    # ----------------------------------------------------------------------
-    # DATA LOADING
-    # ----------------------------------------------------------------------
     def _load_data(self) -> bool:
         """Load target and reference parquet files, align them."""
         try:
@@ -104,9 +101,7 @@ class LiveEngine:
             logger.info(f"Loading reference data from {path_ref}")
             df_ref = pd.read_parquet(path_ref)
 
-            # Ensure timestamp column exists and sort
             if "timestamp" not in df_target.columns:
-                # Try to infer index as timestamp
                 if isinstance(df_target.index, pd.DatetimeIndex):
                     df_target = df_target.reset_index()
                 else:
@@ -120,11 +115,9 @@ class LiveEngine:
                     logger.error("Reference data missing 'timestamp' column")
                     return False
 
-            # Rename close columns to avoid conflict
             df_target = df_target[["timestamp", "close"]].rename(columns={"close": "close_target"})
             df_ref = df_ref[["timestamp", "close"]].rename(columns={"close": "close_ref"})
 
-            # Merge on timestamp (inner join to ensure alignment)
             df = pd.merge(df_target, df_ref, on="timestamp", how="inner")
             df.sort_values("timestamp", inplace=True)
             df.reset_index(drop=True, inplace=True)
@@ -137,24 +130,19 @@ class LiveEngine:
             logger.error(f"Data load failed: {e}")
             return False
 
-    # ----------------------------------------------------------------------
-    # EXECUTION INITIALIZATION
-    # ----------------------------------------------------------------------
     async def _init_execution(self) -> bool:
         """Initialize simulator and OMS facade."""
         try:
-            # Create simulator config from execution config
             sim_config = SimulatorConfig(
-                initial_cash=self.execution_config.get("initial_cash", 100_000.0),
+                initial_cash=self.execution_config.get("initial_cash", 500.0),
                 base_currency="USDT",
-                fee_rate_maker=self.execution_config.get("maker_fee", 0.0002),
+                fee_rate_maker=self.execution_config.get("maker_fee", -0.0002),
                 fee_rate_taker=self.execution_config.get("taker_fee", 0.0004),
-                slippage_std_bps=self.execution_config.get("slippage", 0.0001) * 10000,  # convert to bps
+                slippage_std_bps=self.execution_config.get("slippage", 0.0001) * 10000,
             )
             self._simulator = ExecutionSimulator(config=sim_config)
             logger.info("✅ Simulator created")
 
-            # Parameter yang valid untuk OMSConfig (lihat core/execution/oms/system.py)
             allowed_oms_params = {
                 'max_open_orders',
                 'max_notional_per_order',
@@ -167,9 +155,7 @@ class LiveEngine:
 
             mode = OMSMode.PAPER if self.execution_config.get("mode") == "PAPER" else OMSMode.LIVE
 
-            # Filter hanya parameter yang diizinkan
-            oms_kwargs = {k: v for k, v in self.execution_config.items() 
-                          if k in allowed_oms_params}
+            oms_kwargs = {k: v for k, v in self.execution_config.items() if k in allowed_oms_params}
 
             oms_result = OMSFacade.create(
                 broker=self._simulator,
@@ -184,7 +170,10 @@ class LiveEngine:
                 return False
 
             self._oms = oms_result.unwrap()
+            
+            assert self._oms is not None
             await self._oms.start()
+            
             logger.info("✅ Execution environment ready.")
             return True
 
@@ -192,9 +181,6 @@ class LiveEngine:
             logger.error(f"Execution init error: {e}", exc_info=True)
             return False
 
-    # ----------------------------------------------------------------------
-    # STRATEGY INITIALIZATION
-    # ----------------------------------------------------------------------
     def _init_strategy(self) -> bool:
         """Instantiate the strategy using the factory with config."""
         try:
@@ -211,49 +197,51 @@ class LiveEngine:
             logger.error(f"Strategy init error: {e}")
             return False
 
-    # ----------------------------------------------------------------------
-    # MAIN LOOP
-    # ----------------------------------------------------------------------
     async def _main_loop(self):
         """Iterate through data ticks, update strategy, submit orders."""
+        
+        # =========================================================
+        # [SURGERY FIX 2]: Assert beruntun untuk mematikan linter
+        # =========================================================
+        assert self._data is not None
+        assert self._simulator is not None
+        assert self._oms is not None
+        assert self._strategy is not None
+
         while self._running and self._current_index < len(self._data):
             tick_start = time.monotonic()
 
-            # Get current tick
+            if self._current_index % 100 == 0:
+                logger.info(f"⏳ Processing tick {self._current_index}/{len(self._data)}...")
+
             row = self._data.iloc[self._current_index]
-            timestamp = row["timestamp"]
-            # Convert timestamp to milliseconds if needed (assuming it's in seconds or datetime)
+            
+            # [SURGERY FIX 3]: Bypass Pandas Type Stubs dengan type: ignore
+            timestamp = row["timestamp"]  # type: ignore
+            close_target = float(row["close_target"])  # type: ignore
+            
             if isinstance(timestamp, pd.Timestamp):
                 ts_ms = int(timestamp.timestamp() * 1000)
             else:
-                # assume already ms or seconds? we'll convert to ms
                 ts_ms = int(timestamp) if timestamp > 1e11 else int(timestamp * 1000)
 
-            # Feed tick to strategy
             signal = self._feed_tick(row)
 
-            # Update simulator's price (so that orders execute at correct price)
-            # Simulator uses _last_prices dict; we set price for target symbol
             symbol_traded = self.data_config["symbol_traded"]
-            self._simulator.update_price(symbol_traded, row["close_target"])
+            self._simulator.update_price(symbol_traded, close_target)
 
-            # Check risk limits before acting on signal
             if not await self._check_risk():
                 logger.warning("⛔ Risk limit breached. Stopping trading.")
                 break
 
-            # If signal is actionable, submit order
             if signal and signal.signal_type in (SignalType.BUY, SignalType.SELL):
-                await self._submit_order(signal, row["close_target"])
+                await self._submit_order(signal, close_target)
 
-            # Poll for order updates (optional, but good for simulation)
             if self._current_index % 10 == 0:
                 await self._oms.refresh_orders()
 
-            # Update peak equity for drawdown tracking
             await self._update_peak_equity()
 
-            # Control replay speed
             elapsed = time.monotonic() - tick_start
             sleep_time = max(0, self._replay_speed - elapsed)
             if sleep_time > 0:
@@ -265,18 +253,25 @@ class LiveEngine:
 
     def _feed_tick(self, row: pd.Series):
         """Feed a single tick to the strategy and return the signal."""
+        assert self._strategy is not None
+
         symbol_traded = self.data_config["symbol_traded"]
-        base = symbol_traded.split('/')[0]  # e.g., DOGE
-        timestamp = row["timestamp"]
-        if isinstance(timestamp, pd.Timestamp):
-           ts_ms = int(timestamp.timestamp() * 1000)
+        base = symbol_traded.split('/')[0] 
+        
+        # [SURGERY FIX 4]: Pandas ignore
+        target_val: Any = row["close_target"]
+        ref_val: Any = row["close_ref"]
+        timestamp_val: Any = row["timestamp"]
+
+
+        if isinstance(timestamp_val, pd.Timestamp):
+           ts_ms = int(timestamp_val.timestamp() * 1000)
         else:
-        # if already ms (> year 2000 in ms) or seconds
-            ts_ms = int(timestamp) if timestamp > 1e11 else int(timestamp * 1000)
+            ts_ms = int(timestamp_val) if timestamp_val > 1e11 else int(timestamp_val * 1000)
 
         data = {
-            f"close_{base}": float(row["close_target"]),
-            "close_BTC": float(row["close_ref"]),
+            f"close_{base}": float(target_val),
+            "close_BTC": float(ref_val),
         }
 
         obs = MarketObservation(
@@ -293,44 +288,70 @@ class LiveEngine:
 
     async def _submit_order(self, signal, current_price: float):
         """Convert signal to order and submit via OMS."""
-        # Determine side and quantity
-        if signal.signal_type == SignalType.BUY:
-            side = OrderSide.BUY
-        elif signal.signal_type == SignalType.SELL:
-            side = OrderSide.SELL
-        else:
-            return  # not entry
+        assert self._oms is not None
 
-        # Use fixed quantity for now; could be dynamic from strategy's position sizing
-        # For simplicity, use a fixed fraction of max position from config
-        max_pos = self.strategy_config.get("signal_params", {}).get("max_position", 1000.0)
-        quantity = max_pos * 0.001  # 10% of max as default size
+        try:
+            if signal.signal_type not in (SignalType.BUY, SignalType.SELL):
+                return
 
-        # Use market orders
-        symbol = self.data_config["symbol_traded"]
-        if side == OrderSide.BUY:
-            result = await self._oms.buy_market(symbol, quantity)
-        else:
-            result = await self._oms.sell_market(symbol, quantity)
+            equity = self._oms.get_equity()
+            trade_value_usdt = equity * 0.10  
+            quantity = trade_value_usdt / current_price
+            
+            if quantity <= 0:
+                return
 
-        match_result(
-            result,
-            on_ok=lambda report: logger.info(
-                f"✅ Order {report.order.order_id} executed: fills={len(report.fills)}"
-            ),
-            on_err=lambda err: logger.error(f"❌ Order failed: {err}"),
-        )
+            symbol = self.data_config["symbol_traded"]
+            side = OrderSide.BUY if signal.signal_type == SignalType.BUY else OrderSide.SELL
+            
+            metadata = getattr(signal, 'metadata', getattr(signal, '_metadata', {}))
+            zscore = metadata.get("zscore", 0.0)
+            is_urgent = abs(zscore) > 1.5
+
+            if side == OrderSide.BUY:
+                if is_urgent:
+                    limit_price = current_price * 1.001 
+                    logger.info(f"⚡ URGENT BUY (Z={zscore:.2f}) -> TAKER @ {limit_price:.4f}")
+                else:
+                    limit_price = current_price * 1.0005 
+                    logger.info(f"🧘 PASSIVE BUY (Z={zscore:.2f}) -> MAKER(Simulated) @ {limit_price:.4f}")
+                    
+                result = await self._oms.buy_limit(symbol, quantity, limit_price)
+            else: 
+                if is_urgent:
+                    limit_price = current_price * 0.999
+                    logger.info(f"⚡ URGENT SELL (Z={zscore:.2f}) -> TAKER @ {limit_price:.4f}")
+                else:
+                    limit_price = current_price * 0.9995
+                    logger.info(f"🧘 PASSIVE SELL (Z={zscore:.2f}) -> MAKER(Simulated) @ {limit_price:.4f}")
+                    
+                result = await self._oms.sell_limit(symbol, quantity, limit_price)
+
+            match_result(
+                result,
+                on_ok=lambda report: logger.info(
+                    f"✅ Order {report.order.order_id} routed | Side: {side.name} | Qty: {quantity:,.2f} {symbol}"
+                ),
+                on_err=lambda err: logger.error(f"❌ Order failed: {err}"),
+            )
+            
+        except Exception as e:
+            logger.error(f"💥 _submit_order CRASHED: {e}", exc_info=True)
 
     async def _check_risk(self) -> bool:
         """Check global risk limits (kill switch, drawdown)."""
+        assert self._oms is not None
+
         if self._oms.is_kill_switch_engaged():
-            logger.warning(f"Kill switch engaged: {self._oms._oms.sentry._kill_reason}")
+            sentry = getattr(self._oms._oms, 'sentry', None)
+            reason = getattr(sentry, '_kill_reason', 'Unknown Override') if sentry else 'Unknown'
+            logger.warning(f"Kill switch engaged: {reason}")
             return False
 
-        # Drawdown check
         equity = self._oms.get_equity()
         if equity > self._peak_equity:
             self._peak_equity = equity
+            
         if self._peak_equity > 0:
             drawdown = (self._peak_equity - equity) / self._peak_equity
             if drawdown > self.risk_config.get("max_drawdown", 0.15):
@@ -341,8 +362,12 @@ class LiveEngine:
 
     async def _update_peak_equity(self):
         """Update peak equity in OMS sentry."""
+        assert self._oms is not None
+            
         equity = self._oms.get_equity()
-        self._oms._oms.sentry.update_peak_equity(equity)
+        sentry = getattr(self._oms._oms, 'sentry', None)
+        if sentry and hasattr(sentry, 'update_peak_equity'):
+            sentry.update_peak_equity(equity)
 
     async def _shutdown(self):
         """Graceful shutdown."""
@@ -367,4 +392,13 @@ async def main():
 
 
 if __name__ == "__main__":
+    import logging
+    # [SURGERY FIX]: Paksa terminal untuk menampilkan pesan INFO dan kesuksesan
+    logging.basicConfig(
+        level=logging.INFO, 
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        force=True
+    )
+    
+    asyncio.run(main())
     asyncio.run(main())

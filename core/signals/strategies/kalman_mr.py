@@ -10,7 +10,7 @@ import pandas as pd
 from typing import Optional, Tuple, Dict, Any, List, Union
 from dataclasses import dataclass, field
 import logging
-
+import time
 # IMPORT CHIP GPU (MATH KERNEL)
 from core.math import (
     AdaptiveKalmanFilter, 
@@ -51,6 +51,8 @@ class KalmanMRState:
     observation_count: int = 0
     spread_history: List[float] = field(default_factory=list)  # Buffer untuk vol calculation
     price_pair: Tuple[str, str] = ("", "")  # (asset_y, asset_x)
+    last_signal: SignalType = SignalType.NEUTRAL
+    last_signal_time: float = 0.0
 
 # ========== MAIN STRATEGY CLASS ==========
 
@@ -414,13 +416,33 @@ class KalmanMeanReversion(BaseStrategy):
             if volatility < 1e-9:
                 volatility = 1e-9
             zscore = residual / volatility
+            self._internal_state.last_zscore = zscore
             
             # --- Generate Signal ---
-            signal_type, strength = self._determine_signal(zscore)
+            raw_signal_type, strength = self._determine_signal(zscore)
             
+            final_signal_type = raw_signal_type
+
+            current_time = time.time()
+            if raw_signal_type != SignalType.NEUTRAL:
+                time_since_last = current_time - getattr(self._internal_state, 'last_signal_time', 0.0)
+                if time_since_last < 2.0:
+                    final_signal_type = SignalType.NEUTRAL
+
+            if final_signal_type in [SignalType.BUY, SignalType.SELL]:
+                if final_signal_type == self._internal_state.last_signal:
+                    final_signal_type = SignalType.NEUTRAL
+
+            if final_signal_type != SignalType.NEUTRAL:
+                self._internal_state.last_signal = final_signal_type
+                self._internal_state.last_signal_time = current_time
+
+            if final_signal_type in [SignalType.EXIT, SignalType.STOP]:
+                self._internal_state.last_signal = SignalType.NEUTRAL
+
             return Ok(SignalEvent(
                 timestamp=timestamp,
-                signal_type=signal_type,
+                signal_type=final_signal_type,
                 strength=strength,
                 symbol=self._internal_state.price_pair[0],
                 strategy_name=self.sig_config.name,
@@ -431,7 +453,8 @@ class KalmanMeanReversion(BaseStrategy):
                     "volatility": float(volatility),
                     "residual": float(residual),
                     "window_size": self.sig_config.volatility_window,
-                    "kalman_R": self.math_config.R
+                    "kalman_R": self.math_config.R,
+                    "Blocked_by_guard": raw_signal_type != final_signal_type
                 }
             ))
             

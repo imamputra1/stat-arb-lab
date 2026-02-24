@@ -179,7 +179,7 @@ class InventoryManager:
         current = self._cash_balances.get(currency, 0.0)
         self._cash_balances[currency] = current + amount
 
-    # ========== 🔥 NEW METHODS – EQUITY & STATE VALIDATION ==========
+# ========== 🔥 NEW METHODS – EQUITY & STATE VALIDATION ==========
 
     def get_equity(self, market_prices: Dict[Symbol, float]) -> float:
         """
@@ -201,10 +201,12 @@ class InventoryManager:
             
             price = market_prices.get(sym)
             if price is None:
-                logger.warning(f"⚠️ Missing market price for {sym}, skipping position valuation")
+                # [SURGERY] Ubah warning menjadi debug agar terminal rapi
+                logger.debug(f"⚠️ Missing market price for {sym}, skipping position valuation")
                 continue
             if not isinstance(price, (int, float)) or math.isnan(price) or math.isinf(price):
-                logger.warning(f"⚠️ Invalid market price {price} for {sym}, skipping")
+                # [SURGERY] Ubah warning menjadi debug agar terminal rapi
+                logger.debug(f"⚠️ Invalid market price {price} for {sym}, skipping")
                 continue
                 
             total += pos.quantity * price
