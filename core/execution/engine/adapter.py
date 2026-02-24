@@ -188,3 +188,6 @@ class EmulatorAdapter(BrokerProtocol):
         else:
             self._cash += (cost - trade.fee)
             self._positions[trade.symbol] = self._positions.get(trade.symbol, 0.0) - trade.quantity
+
+
+__all__ = ['EmulatorAdapter']

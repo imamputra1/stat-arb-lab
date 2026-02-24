@@ -112,9 +112,24 @@ class StandardFeeConfig(FeeConfig):
     enable_token_discount: bool = False
     token_discount_rate: float = 0.25
 
+# --- 5. FUNDING FEE ---
+@dataclass(frozen=True)
+class FundingConfig:
+    model_type: str = "perpetual"
+    funding_interval_sec: int = 28800      # 8 jam
+    funding_rate: float = 0.0001           # 0.01% per interval
+    def validate(self) -> Result[bool, str]:
+        return Ok(True)
+
+@dataclass(frozen=True)
+class PerpetualFundingConfig(FundingConfig):
+    model_type: str = "perpetual"
+    max_funding_rate: float = 0.005        # 0.5% cap opsional
+    # bisa tambah parameter premium index dll.
+
 # --- EXPORTS ---
 __all__ = [
-    'SlippageConfig', 'LatencyConfig', 'LiquidityConfig', 'FeeConfig',
+    'SlippageConfig', 'LatencyConfig', 'LiquidityConfig', 'FeeConfig', 'FundingConfig',
     'VolatilitySlippageConfig', 'NetworkCongestionLatencyConfig',
-    'StochasticLiquidityConfig', 'StandardFeeConfig'
+    'StochasticLiquidityConfig', 'StandardFeeConfig', 'PerpetualFundingConfig'
 ]

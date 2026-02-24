@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Deque, Union  
 from collections import defaultdict, deque
 from enum import Enum
+from core.execution.types import Symbol
+from core.execution.oms.components import InventoryManager, Accountant
 
 # Import Core Types
 from core.execution.types import (
@@ -430,6 +432,7 @@ class ExchangeEmulator:
         # [FIX] Gunakan defaultdict untuk menampung history penolakan per Order ID
         self.rejection_history: Dict[str, List[Rejection]] = defaultdict(list)
         self.rejections: List[Rejection] = []       # Flat list untuk reporting cepat
+        self._last_funding_ts: Optional[float] = None
         
         # Metrics
         self.metrics = {
@@ -545,7 +548,57 @@ class ExchangeEmulator:
             )
             return Err(rejection)
 
-        # ====================== ORDER TYPE HANDLERS ======================
+    def process_funding_rate(
+        self,
+        current_timestamp: float,
+        market_prices: Dict[Symbol, float],
+        inventory: InventoryManager,
+        accountant: Accountant
+    ) -> None:
+        """
+        Dipanggil setiap tick oleh engine utama.
+        Menghitung dan mengaplikasikan funding fee untuk semua posisi.
+        """
+        if self._last_funding_ts is None:
+            self._last_funding_ts = current_timestamp
+            return
+
+        time_elapsed = current_timestamp - self._last_funding_ts
+        funding_interval = self.mechanics.funding.config.funding_interval_sec
+
+        if time_elapsed >= funding_interval:
+            positions = inventory.get_all_positions()
+            total_fee = 0.0
+
+            for pos in positions:
+                if abs(pos.quantity) < 1e-9:
+                    continue
+                mark_price = market_prices.get(pos.symbol)
+                if mark_price is None:
+                    self.logger.warning(f"Tidak ada mark price untuk {pos.symbol}, lewati funding")
+                    continue
+
+                fee = self.mechanics.funding.calculate_funding_fee(
+                    position_size=pos.quantity,
+                    mark_price=mark_price,
+                    time_elapsed=time_elapsed,
+                    current_timestamp=current_timestamp
+                )
+
+                if abs(fee) > 1e-9:
+                    # 1. Update cash di inventory
+                    inventory.apply_funding_fee(fee, currency="USDT")   # asumsi base currency USDT
+
+                    # 2. Catat di accountant untuk PnL & fees
+                    accountant.record_funding_fee(symbol=pos.symbol, fee=fee, currency="USDT")
+
+                    total_fee += fee
+
+            if abs(total_fee) > 1e-9:
+                self.logger.info(f"Funding fee total: {total_fee:.4f} USDT")
+
+            self._last_funding_ts = current_timestamp
+
     
 # ====================== ORDER TYPE HANDLERS ======================
     
@@ -838,7 +891,6 @@ class ExecutionEngine:
         self.emulator.circuit_breaker.reset()
 
 # ====================== EXPORTS ======================
-
 __all__ = [
     'MarketRegime',
     'MarketRegimeDetector',

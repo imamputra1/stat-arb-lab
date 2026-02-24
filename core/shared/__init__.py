@@ -42,7 +42,6 @@ from .utils import get_logger
 # PUBLIC EXPORTS
 # ==============================================================================
 __all__ = [
-    # --- Result Pattern ---
     "Result", 
     "Ok", 
     "Err", 
@@ -51,26 +50,16 @@ __all__ = [
     "match_result",
     "is_ok",
     "is_err",
-
-    # --- Domain Types ---
     "OHLCV", 
     "FetchJob", 
     "OHLCVContract", 
     "FetchJobContract",
-
-    # --- Domain Utils ---
     "create_ohlcv_bulk", 
     "validate_ohlcv_batch", 
     "is_valid_ohlcv", 
     "is_valid_fetch_job",
-
-    # --- Status & Async ---
     "Status",
     "AsyncResult",
-
-    # --- Monitoring ---
     "PerformanceMonitor",
-
-    # --- Logging ---
     "get_logger"
 ]

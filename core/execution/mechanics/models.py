@@ -17,13 +17,15 @@ from .config import (
     VolatilitySlippageConfig,
     NetworkCongestionLatencyConfig,
     StandardFeeConfig,
-    StochasticLiquidityConfig
+    StochasticLiquidityConfig,
+    PerpetualFundingConfig
 )
 from .base import (
     BaseSlippageModel,
     BaseLatencyModel,
     BaseLiquidityModel,
-    BaseFeeModel
+    BaseFeeModel,
+    BaseFundingModel,
 )
 
 # ====================== 1. SLIPPAGE IMPLEMENTATIONS ======================
@@ -207,3 +209,42 @@ class StandardFee(BaseFeeModel):
     # Helper get_config boleh tetap ada di sini jika dibutuhkan caller luar
     def get_config(self) -> StandardFeeConfig:
         return self.config
+
+# ====================== 5. FUNDING FEE ======================
+class PerpetualFunding(BaseFundingModel):
+    """
+    Model funding rate perpetual standar.
+    Fee = position_size * mark_price * funding_rate * (time_elapsed / interval)
+    """
+    @property
+    def config(self) -> PerpetualFundingConfig:
+        return super().config
+
+    def calculate_funding_fee(
+        self,
+        position_size: float,
+        mark_price: float,
+        time_elapsed: float,
+        current_timestamp: float
+    ) -> float:
+        if abs(position_size) < 1e-9 or mark_price <= 0:
+            return 0.0
+
+        intervals_passed = time_elapsed / self.config.funding_interval_sec
+        fee = position_size * mark_price * self.config.funding_rate * intervals_passed
+
+        # Batasi jika perlu
+        max_abs_fee = abs(position_size) * mark_price * self.config.max_funding_rate
+        if abs(fee) > max_abs_fee:
+            fee = max_abs_fee if fee > 0 else -max_abs_fee
+
+        return fee
+
+# Jangan lupa ekspor di __init__.py nanti
+__all__ = [
+    'VolatilitySlippage',
+    'NetworkCongestionLatency',
+    'StochasticLiquidity',
+    'StandardFee',
+    'PerpetualFunding'
+]

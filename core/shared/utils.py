@@ -35,3 +35,5 @@ def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
     logger.addHandler(handler)
     
     return logger
+
+__all__ = ['get_logger']

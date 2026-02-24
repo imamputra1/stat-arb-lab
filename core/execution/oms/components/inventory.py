@@ -45,7 +45,8 @@ class InventoryManager:
         self._positions: Dict[Symbol, Position] = {}
         # Cash: { "USDT": 10000.0, "BNB": 0.5 }
         self._cash_balances: Dict[Currency, float] = {base_currency: 0.0}
-        
+        self._lock: Any = None
+
     # ========== READ OPERATIONS ==========
 
     def get_position(self, symbol: str) -> Position:
@@ -244,3 +245,9 @@ class InventoryManager:
                 return Err(f"Position {sym} realized_pnl is invalid: {pos.realized_pnl}")
         
         return Ok(True)
+
+    def apply_funding_fee(self, fee: float, currency: str = "USDT") -> None:
+        """Mengurangi/menambah cash balance karena funding fee."""
+        self._cash_balances[currency] = self._cash_balances.get(currency, 0.0) - fee
+
+        

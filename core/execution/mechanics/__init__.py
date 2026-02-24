@@ -10,7 +10,8 @@ from .protocols import (
     SlippageModel, 
     LatencyModel, 
     LiquidityModel, 
-    FeeModel
+    FeeModel,
+    FundingModel
 )
 
 # 2. Configs (The Parameters)
@@ -20,6 +21,8 @@ from .config import (
     LatencyConfig, 
     LiquidityConfig, 
     FeeConfig,
+    FundingConfig,
+    PerpetualFundingConfig,
     
     # Specific/Sadistic Configs
     VolatilitySlippageConfig,
@@ -33,7 +36,8 @@ from .base import (
     BaseSlippageModel, 
     BaseLatencyModel, 
     BaseLiquidityModel, 
-    BaseFeeModel
+    BaseFeeModel,
+    BaseFundingModel
 )
 
 # 4. Implementations (The Torture Tools)
@@ -51,30 +55,32 @@ from .factory import (
     create_volatility_slippage,
     create_network_congestion_latency,
     create_stochastic_liquidity,
-    create_standard_fee
+    create_standard_fee,
 )
 
 __all__ = [
     # Protocols
-    'SlippageModel', 'LatencyModel', 'LiquidityModel', 'FeeModel',
+    'SlippageModel', 'LatencyModel', 'LiquidityModel', 'FeeModel', 'FundingModel',
     
     # Base Configs
-    'SlippageConfig', 'LatencyConfig', 'LiquidityConfig', 'FeeConfig',
+    'SlippageConfig', 'LatencyConfig', 'LiquidityConfig', 'FeeConfig', 'FundingConfig',
     
     # Specific Configs
     'VolatilitySlippageConfig', 
     'NetworkCongestionLatencyConfig',
     'StochasticLiquidityConfig', 
     'StandardFeeConfig',
+    'PerpetualFundingConfig',
     
     # Base Classes
-    'BaseSlippageModel', 'BaseLatencyModel', 'BaseLiquidityModel', 'BaseFeeModel',
+    'BaseSlippageModel', 'BaseLatencyModel', 'BaseLiquidityModel', 'BaseFeeModel', 'BaseFundingModel',
     
     # Concrete Models
     'VolatilitySlippage', 
     'NetworkCongestionLatency', 
     'StochasticLiquidity', 
     'StandardFee',
+    'PerpetualFunding',
     
     # Factory & Suite
     'MechanicsSuite',
@@ -82,5 +88,6 @@ __all__ = [
     'create_volatility_slippage',
     'create_network_congestion_latency',
     'create_stochastic_liquidity',
-    'create_standard_fee'
+    'create_standard_fee',
+    'create_perpetual_funding'
 ]

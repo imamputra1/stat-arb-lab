@@ -14,10 +14,10 @@ from core.shared.utils import get_logger
 
 # Import Protocols & Configs
 from .protocols import (
-    SlippageModel, LatencyModel, LiquidityModel, FeeModel
+    SlippageModel, LatencyModel, LiquidityModel, FeeModel, FundingModel
 )
 from .config import (
-    SlippageConfig, LatencyConfig, LiquidityConfig, FeeConfig
+    SlippageConfig, LatencyConfig, LiquidityConfig, FeeConfig, FundingConfig
 )
 from core.execution.types import Order
 
@@ -116,11 +116,36 @@ class BaseFeeModel(ABC, FeeModel):
         """Wajib diimplementasikan oleh child class"""
         pass
 
+
+# ====================== 5. BASE FUNDING RATE ======================
+class BaseFundingModel(ABC, FundingModel):
+    """
+    Base class untuk semua model Funding.
+    """
+    def __init__(self, config: Optional[FundingConfig] = None):
+        self._config = config or FundingConfig()
+        self.logger = get_logger(f"mechanics.funding.{self.config.model_type}")
+
+    @property
+    def config(self) -> FundingConfig:
+        return self._config
+
+    @abstractmethod
+    def calculate_funding_fee(
+        self,
+        position_size: float,
+        mark_price: float,
+        time_elapsed: float,
+        current_timestamp: float
+    ) -> float:
+        pass
+
 # ====================== EXPORTS ======================
 
 __all__ = [
     'BaseSlippageModel', 
     'BaseLatencyModel', 
-    'BaseLiquidityModel', # [FIX] Menambahkan ini agar ter-export
-    'BaseFeeModel'
+    'BaseLiquidityModel', 
+    'BaseFeeModel',
+    'BaseFundingModel'
 ]

@@ -9,6 +9,7 @@ from typing import Dict, List, Any
 from dataclasses import dataclass
 import math
 import warnings
+import time
 
 from core.shared.utils import get_logger
 from core.shared.result import Result, Ok, Err
@@ -63,6 +64,7 @@ class Accountant:
         # 3. Internal State untuk PnL Calculation (Shadow Inventory)
         # Kita track avg_price sendiri untuk memverifikasi InventoryManager
         self._shadow_positions: Dict[str, Dict[str, float]] = {} 
+        self._funding_history: List[Dict] = []
 
     # ================== EXISTING METHODS (MODIFIED SAFELY) ==================
 
@@ -286,7 +288,25 @@ class Accountant:
             "total_realized_pnl": self._total_realized_pnl,
             "total_fees": self._total_fees.copy()
         }
+    def record_funding_fee(self, symbol: str, fee: float, currency: str = "USDT") -> None:
+        """
+        Mencatat funding fee:
+          - fee positif → cash berkurang, realized PnL berkurang
+          - fee negatif → cash bertambah, realized PnL bertambah
+        """
+        self._total_fees[currency] = self._total_fees.get(currency, 0.0) + abs(fee)
+        self._total_realized_pnl -= fee   # karena fee positif mengurangi pnl
 
+        # Simpan history untuk audit
+        self._funding_history.append({
+            'timestamp': time.time(),
+            'symbol': symbol,
+            'fee': fee,
+            'currency': currency
+        })
+
+    def get_funding_history(self) -> List[Dict]:
+        return list(self._funding_history)
     # ================== INTERNAL LOGIC (SHADOW CALC) ==================
 
     def _calculate_trade_pnl(self, fill: TradeFill) -> Dict[str, float]:
@@ -348,3 +368,6 @@ class Accountant:
             'realized_pnl': realized_pnl,
             'cost_basis': avg_price # Kembalikan cost basis SEBELUM trade ini berubah (atau sesudah? Biasanya snapshot saat trade)
         }
+
+
+__all__ = ['Accountant', 'TradeRecord']

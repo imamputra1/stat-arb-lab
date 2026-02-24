@@ -4,7 +4,6 @@ Location: core/execution/mechanics/protocols.py
 Desc: Kontrak interface murni untuk simulasi friksi pasar.
       Sinkron dengan implementasi di core/execution/mechanics/models.py.
 """
-
 from typing import Protocol, runtime_checkable
 from core.execution.types import Order
 
@@ -80,11 +79,33 @@ class FeeModel(Protocol):
         """
         ...
 
-# ====================== EXPORTS ======================
+# ====================== 5. FUNDING FEE ======================
 
+@runtime_checkable
+class FundingModel(Protocol):
+    """
+    Protocol untuk menghitung funding fee.
+    """
+    def calculate_funding_fee(
+        self,
+        position_size: float,
+        mark_price: float,
+        time_elapsed: float,
+        current_timestamp: float
+        ) -> float:
+        """
+        Menghitung funding fee yang harus dibayar/diterima.
+        Nilai positif berarti LONG bayar ke SHORT (mengurangi cash),
+        negatif berarti SHORT terima (menambah cash).
+        """
+        ...
+
+
+# ====================== EXPORTS ======================
 __all__ = [
     'SlippageModel', 
     'LatencyModel', 
     'LiquidityModel', 
-    'FeeModel'
+    'FeeModel',
+    'FundingModel'
 ]

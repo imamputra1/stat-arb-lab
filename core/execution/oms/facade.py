@@ -170,3 +170,5 @@ class OMSFacade:
         if acc_res.is_err():
             return acc_res
         return Ok(True)
+
+__all__ = ['OMSFacade']
