@@ -52,7 +52,7 @@ class MetricsReporter:
             "Floating PnL": floating_pnl,
             "ROI (%)": roi_pct,
             "Win Rate (%)": win_rate,
-            "Total Trade": total_trades
+            "Total Trades": total_trades
             }
 
     def generate_risk_report(self) -> Dict[str, Any]:

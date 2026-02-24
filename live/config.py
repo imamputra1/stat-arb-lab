@@ -16,7 +16,7 @@ DATA_CONFIG = {
     "path_ref":    "data/raw/symbol=BTC-USDT/interval=1m/year=2023/month=10/data.parquet",
     
     "symbol_traded": "DOGE/USDT", # Aset yang dieksekusi OMS
-    "replay_speed": 0.01,        # Delay antar tick (0.001s = Fast Replay)
+    "replay_speed": 0.0,        # Delay antar tick (0.001s = Fast Replay)
     "warmup_ticks": 5         # Jumlah data awal untuk pemanasan Kalman Filter
 }
 
@@ -33,7 +33,7 @@ STRATEGY_CONFIG = {
         "name": "DOGE_Sniper_V1",
         
         # SENSITIVITAS (Agresif vs Konservatif)
-        "entry_z_score": 0.5,     # Masuk saat harga menyimpang 2 Standar Deviasi (95% confidence)
+        "entry_z_score": 0.1,     # Masuk saat harga menyimpang 2 Standar Deviasi (95% confidence)
         "exit_z_score": 0.0,      # Keluar saat harga kembali ke Mean (Wajar)
         
         # RISK MANAGEMENT (Safety Net)

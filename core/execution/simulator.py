@@ -126,42 +126,37 @@ class ExecutionSimulator:
     # =========================================================
     # IMPLEMENTASI BROKER PROTOCOL
     # =========================================================
-
     async def submit_order(self, request: OrderRequest) -> Result[ExecutionReport, str]:
         """[PROTOCOL] Menerima order dari OMS."""
-        # 1. Simulate Network Latency (Dynamic)
         await self._simulate_latency()
         
-        # 2. Simulate Exchange Rejection (Ghost Liquidity)
         current_reject_prob = self._reject_prob_override if self._reject_prob_override is not None else self.config.reject_probability
         
         if random.random() < current_reject_prob:
             logger.warning(f"🚫 Order REJECTED by Exchange (Simulated {self._current_regime.value})")
             return self._create_rejection(request, "EXCHANGE_SYSTEM_ERROR_GHOST")
 
-        # 3. Price Check
-        current_price = self._last_prices.get(request.symbol, request.price)
-        if not current_price and request.order_type == OrderType.MARKET:
+        # [SURGERY FIX 1]: Pastikan current_price adalah Float Mutlak
+        price_candidate = self._last_prices.get(request.symbol, request.price)
+        if price_candidate is None:
             return Err(f"Simulator has no price for {request.symbol}")
+        current_price: float = float(price_candidate)
 
-        # 4. Create Order Internal
         order = Order.from_request(request, exchange_order_id=f"SIM-{uuid.uuid4().hex[:8]}")
         
-        # 5. Ack
         ack_res = order.mark_acknowledged(order.exchange_order_id)
         if ack_res.is_err(): return Err(str(ack_res.unwrap_err()))
         order = ack_res.unwrap()
         
-        # 6. Execute based on Type
         if request.order_type == OrderType.MARKET:
             return self._execute_market_order(order, current_price)
         elif request.order_type == OrderType.LIMIT:
-            return self._place_limit_order(order)
+            return self._place_limit_order(order, current_price)
         else:
             return self._create_rejection(request, "UNSUPPORTED_ORDER_TYPE")
 
     async def cancel_order(self, order_id: str) -> Result[ExecutionReport, str]:
-        await self._simulate_latency() # Cancel pun kena lag
+        await self._simulate_latency()
         
         if order_id not in self._active_orders:
             return Err("Order not found or already filled")
@@ -172,10 +167,14 @@ class ExecutionSimulator:
         if cancel_res.is_err(): return Err(str(cancel_res.unwrap_err()))
         order = cancel_res.unwrap()
         
+        # [SURGERY FIX 2]: Fallback ke 0.0 jika order belum pernah tereksekusi
+        avg_price = order.average_fill_price if order.average_fill_price is not None else 0.0
+        
         return Ok(ExecutionReport(
             order=order, fills=(), is_complete=True, 
-            total_notional=order.filled_quantity * order.average_fill_price
+            total_notional=order.filled_quantity * avg_price
         ))
+
 
     async def get_order(self, order_id: str) -> Result[ExecutionReport, str]:
         if order_id in self._active_orders:
@@ -227,58 +226,65 @@ class ExecutionSimulator:
         entry = _OrderBookEntry(order, 0.0, order.quantity)
         return self._fill_order(entry, exec_price, is_taker=True)
 
-    def _place_limit_order(self, order: Order) -> Result[ExecutionReport, str]:
+    def _place_limit_order(self, order: Order, current_price: float) -> Result[ExecutionReport, str]:
+        """
+        [SURGERY FIX]: Pseudo-Matching Engine untuk Limit Order.
+        Karena kita menjalankan Fast-Forward Simulation, kita asumsikan order tereksekusi instan 
+        untuk melihat PnL dan mendemonstrasikan struktur Taker/Maker Fee.
+        """
         entry = _OrderBookEntry(order, 0.0, order.quantity)
-        self._active_orders[order.order_id] = entry
         
-        open_res = order.mark_open()
-        if open_res.is_err(): return Err(str(open_res.unwrap_err()))
-        
-        return Ok(ExecutionReport(order=open_res.unwrap(), fills=(), is_complete=False))
+        # Deteksi apakah order membelah spread (Aggressive Limit)
+        is_marketable = False
+        if order.side == OrderSide.BUY and order.price >= current_price:
+            is_marketable = True
+        elif order.side == OrderSide.SELL and order.price <= current_price:
+            is_marketable = True
+            
+        if is_marketable:
+            # [TAKER]: Eksekusi di harga market, kena biaya Taker Fee (+0.04%)
+            return self._fill_order(entry, current_price, is_taker=True)
+        else:
+            # [MAKER]: Dalam simulasi MFT ini, kita asumsikan harga akhirnya terjemput (Filled)
+            # Eksekusi di harga limit, mendapatkan Maker Rebate (-0.02%)
+            return self._fill_order(entry, order.price, is_taker=False)
 
     def _fill_order(self, entry: _OrderBookEntry, price: float, is_taker: bool) -> Result[ExecutionReport, str]:
         order = entry.order
         qty = entry.remaining_qty
         
-        # Fee Calculation
         fee_rate = self.config.fee_rate_taker if is_taker else self.config.fee_rate_maker
-        notional = qty * price
-        fee_amt = notional * fee_rate
+        fee_amt = (qty * price) * fee_rate
         
-        # Update Internal Balances (Exchange Side)
         self._update_exchange_balances(order.symbol, order.side, qty, price, fee_amt)
         
-        # Create Fill
-        # Latency fill report juga kena impact regime
         fill_latency = random.gauss(self.config.latency_mean_ms, self.config.latency_std_ms) * self._latency_multiplier
         
-        fill_res = TradeFill.create(
-            order_id=order.order_id,
-            symbol=order.symbol,
-            side=order.side,
-            quantity=qty,
-            price=price,
-            fee=fee_amt,
-            fee_currency=self.config.base_currency,
-            latency_ms=fill_latency,
-            slippage_bps=abs((price - (order.price or price))/price * 10000)
-        )
+        # Guard untuk slippage jika order.price None
+        order_price_safe = order.price if order.price is not None else price
+        slippage_bps = abs((price - order_price_safe) / price * 10000) if price > 0 else 0.0
         
+        fill_res = TradeFill.create(
+            order_id=order.order_id, symbol=order.symbol, side=order.side,
+            quantity=qty, price=price, fee=fee_amt,
+            fee_currency=self.config.base_currency, latency_ms=fill_latency,
+            slippage_bps=slippage_bps
+        )
         if fill_res.is_err(): return Err(str(fill_res.unwrap_err()))
         fill = fill_res.unwrap()
         
-        # Update Order State
         updated_order_res = order.add_fill(qty, price)
         if updated_order_res.is_err(): return Err(str(updated_order_res.unwrap_err()))
         updated_order = updated_order_res.unwrap()
         
-        # Order Book Maintenance
-        if updated_order.is_terminal:
+        # [SURGERY FIX 3]: Logika pasti! Jika barang habis (<= 0), berarti Terminal.
+        entry.filled_qty += qty
+        entry.remaining_qty -= qty
+        
+        if entry.remaining_qty <= 0.0:
             self._active_orders.pop(order.order_id, None)
         else:
             entry.order = updated_order
-            entry.filled_qty += qty
-            entry.remaining_qty -= qty
             
         report = ExecutionReport.from_order_and_fills(updated_order, [fill])
         self._order_history.append(report)
@@ -310,7 +316,39 @@ class ExecutionSimulator:
         return Ok(ExecutionReport(
             order=rej_res.unwrap(), fills=(), is_complete=True, completion_reason=reason
         ))
-    
-    # Utilitas untuk Mock Price Feed dari luar
+    # Inside class ExecutionSimulator, add this method:
+
+    def _match_orders(self, symbol: str, current_price: float):
+        """Mencocokkan harga pasar dengan Limit Order yang aktif."""
+        # Gunakan list(values()) karena self._active_orders bisa berubah saat loop berjalan
+        for entry in list(self._active_orders.values()):
+            order = entry.order
+            
+            # Abaikan jika bukan tipe limit atau simbol beda
+            if order.symbol != symbol or getattr(order, 'order_type', OrderType.LIMIT) != OrderType.LIMIT:
+                continue
+                
+            # [SURGERY FIX 4]: Pelindung Type Float!
+            if order.price is None:
+                continue
+
+            executable = False
+            if order.side == OrderSide.BUY:
+                if current_price <= order.price:
+                    executable = True
+            else:  # SELL
+                if current_price >= order.price:
+                    executable = True
+
+            if executable:
+                self._fill_order(entry, current_price, is_taker=True)
+
+
     def update_price(self, symbol: str, price: float):
+        """
+        Update the last known price for a symbol and trigger order matching.
+        """
         self._last_prices[symbol] = price
+        # Trigger matching engine for this symbol
+        self._match_orders(symbol, price)
+    # Utilitas untuk Mock Price Feed dari luar

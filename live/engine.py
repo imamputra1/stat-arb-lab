@@ -96,10 +96,18 @@ class LiveEngine:
             self._feed_tick(tick)
             self._current_index = i + 1
 
-        logger.info("⚙️ Entering main trading loop...")
-        await self._main_loop()
+        try:
+            logging.info("⚙️ Entering main trading loop...")
+            await self._main_loop()
 
-        await self._shutdown()
+        except asyncio.CancelledError:
+            logging.warning("🛑 Dihentikan paksa oleh user (Ctrl+C)! Mempersiapkan laporan parsial...")
+
+        finally:
+            if hasattr(self, '_print_final_report'):
+                await self._print_final_report()
+            await self._shutdown()
+
 
     def _load_data(self) -> bool:
         """Load target and reference parquet files, align them."""
