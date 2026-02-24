@@ -49,12 +49,14 @@ class LiveEngine:
         strategy_config: Dict[str, Any],
         execution_config: Dict[str, Any],
         risk_config: Dict[str, Any],
+        tick_modifier: Optional[Any] = None
     ):
         self.data_config = data_config
         self.strategy_config = strategy_config
         self.execution_config = execution_config
         self.risk_config = risk_config
         self._market_data_adapter = None
+        self._tick_modifier = tick_modifier
 
         # State
         self._running = False
@@ -97,11 +99,11 @@ class LiveEngine:
             self._current_index = i + 1
 
         try:
-            logging.info("⚙️ Entering main trading loop...")
+            logger.info("⚙️ Entering main trading loop...")
             await self._main_loop()
 
         except asyncio.CancelledError:
-            logging.warning("🛑 Dihentikan paksa oleh user (Ctrl+C)! Mempersiapkan laporan parsial...")
+            logger.warning("🛑 Dihentikan paksa oleh user (Ctrl+C)! Mempersiapkan laporan parsial...")
 
         finally:
             if hasattr(self, '_print_final_report'):
@@ -235,6 +237,9 @@ class LiveEngine:
                 logger.info(f"⏳ Processing tick {self._current_index}/{len(self._data)}...")
 
             row = self._data.iloc[self._current_index]
+
+            if self._tick_modifier is not None:
+                row = self._tick_modifier(row)
             
             # [SURGERY FIX 3]: Bypass Pandas Type Stubs dengan type: ignore
             timestamp = row["timestamp"]  # type: ignore
