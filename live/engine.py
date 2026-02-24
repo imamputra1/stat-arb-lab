@@ -22,11 +22,21 @@ from core.execution.oms.system import OMSMode
 from core.execution.simulator import ExecutionSimulator, SimulatorConfig
 
 from core.signals.factory import create_strategy
-
+from live.reporter import MetricsReporter
 from .config import DATA_CONFIG, STRATEGY_CONFIG, EXECUTION_CONFIG, RISK_CONFIG
+
 
 logger = get_logger("live.engine")
 
+class SimulatorMarketData:
+    def __init__(self):
+        self._prices = {}
+
+    def update_price(self, symbol:str, price: float):
+        self._prices[symbol] = price
+
+    def get_last_price(self, symbol: str) -> Optional[float]:
+        return self._prices.get(symbol)
 
 class LiveEngine:
     """
@@ -44,6 +54,7 @@ class LiveEngine:
         self.strategy_config = strategy_config
         self.execution_config = execution_config
         self.risk_config = risk_config
+        self._market_data_adapter = None
 
         # State
         self._running = False
@@ -141,6 +152,7 @@ class LiveEngine:
                 slippage_std_bps=self.execution_config.get("slippage", 0.0001) * 10000,
             )
             self._simulator = ExecutionSimulator(config=sim_config)
+            self._market_data_adapter =SimulatorMarketData()
             logger.info("✅ Simulator created")
 
             allowed_oms_params = {
@@ -159,7 +171,7 @@ class LiveEngine:
 
             oms_result = OMSFacade.create(
                 broker=self._simulator,
-                market_data=None,
+                market_data=self._market_data_adapter,
                 risk_check=None,
                 mode=mode,
                 **oms_kwargs
@@ -230,6 +242,9 @@ class LiveEngine:
             symbol_traded = self.data_config["symbol_traded"]
             self._simulator.update_price(symbol_traded, close_target)
 
+            if self._market_data_adapter:
+                self._market_data_adapter.update_price(symbol_traded, close_target)
+
             if not await self._check_risk():
                 logger.warning("⛔ Risk limit breached. Stopping trading.")
                 break
@@ -250,6 +265,7 @@ class LiveEngine:
             self._current_index += 1
 
         logger.info("🏁 Main loop finished.")
+        await self._print_final_report()
 
     def _feed_tick(self, row: pd.Series):
         """Feed a single tick to the strategy and return the signal."""
@@ -375,6 +391,17 @@ class LiveEngine:
         if self._oms:
             await self._oms.stop()
         logger.info("✅ Shutdown complete.")
+
+
+    async def _print_final_report(self):
+        """Cetak laporan performa setelah trading selesai."""
+        if self._oms is None:
+            logger.warning("⚠️ OMS tidak tersedia, tidak bisa mencetak laporan.")
+            return
+        initial_cash =self.execution_config.get("initial_cash", 500.0)
+        reporter = MetricsReporter(self._oms, initial_cash)
+        reporter.print_report()
+        
 
 
 # ==============================================================================
