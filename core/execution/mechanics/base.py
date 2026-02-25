@@ -78,8 +78,8 @@ class BaseLiquidityModel(ABC, LiquidityModel):
         self.logger = get_logger("mechanics.liquidity")
 
     @property
-    def config(self) -> LatencyConfig:
-        return self.config
+    def config(self) -> LiquidityConfig:
+        return self._config
 
     @abstractmethod
     def should_fill(

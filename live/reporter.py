@@ -8,6 +8,7 @@ Desc: Menghasilkan laporan akhir performa trading berdasarkan data dari OMS.
 from typing import Dict, Any
 from core.execution.oms.facade import OMSFacade
 
+
 class MetricsReporter:
     """
     Menghasilkan laporan metrik trading setelah sesi berakhir.
@@ -40,7 +41,7 @@ class MetricsReporter:
         realized = perf_summary["total_realized_pnl"]
         win_rate = perf_summary["win_rate"] * 100.0
         total_trades = perf_summary["total_trades"]
-        
+
         final_equity = self.oms.get_equity()
         floating_pnl = final_equity - self.initial_cash - realized
         roi_pct = ((final_equity - self.initial_cash) / self.initial_cash) * 100.0
@@ -53,41 +54,51 @@ class MetricsReporter:
             "ROI (%)": roi_pct,
             "Win Rate (%)": win_rate,
             "Total Trades": total_trades
-            }
+        }
 
     def generate_risk_report(self) -> Dict[str, Any]:
         """
-        Menghitung metrik risiko (Drawdown dan status Kill Switch).
-        Data ditarik dari Sentry.
+        Menghitung metrik risiko:
+        - Peak Equity: nilai equity tertinggi yang pernah dicapai
+        - Current Drawdown: penurunan dari peak saat ini
+        - Max Drawdown Observed: penurunan terdalam selama sesi (diambil dari Sentry)
+        - Max Drawdown Limit: batas drawdown yang dikonfigurasi
+        - Kill Switch status dan alasan
         """
         sentry_stats = self.oms._oms.sentry.get_stats()
-
         peak = sentry_stats["peak_equity"]
         current = self.oms.get_equity()
 
         if peak > 0:
-            drawdown_pct = ((peak - current) / peak) * 100.0
+            current_drawdown_pct = ((peak - current) / peak) * 100.0
         else:
-            drawdown_pct = 0.0
+            current_drawdown_pct = 0.0
+
+        # Asumsi Sentry menyimpan max drawdown observed dalam bentuk desimal (misal 0.1 = 10%)
+        observed_max_drawdown = abs(sentry_stats.get("max_drawdown_observed", 0.0) *100)
 
         return {
             "Peak Equity": peak,
-            "Current Drawdown (%)": drawdown_pct,
+            "Current Drawdown (%)": current_drawdown_pct,
+            "Max Drawdown Observed (%)": observed_max_drawdown,
             "Max Drawdown Limit (%)": sentry_stats.get("max_drawdown_pct", 0.0) * 100,
             "Kill Switch Engaged": sentry_stats["kill_switch"],
             "Kill Reason": sentry_stats.get("kill_reason", "")
-            }
+        }
 
     def generate_system_health(self) -> Dict[str, Any]:
         """
-        Menghitung kecepatan sistem (Latency) dan jumlah order yang ditolak (Sentry Blocks).
+        Menghitung metrik kesehatan sistem:
+        - Rata-rata latensi eksekusi (dari fills)
+        - Jumlah order yang diblokir Sentry
+        - Jumlah fill sukses
+        - Rasio penolakan (rejections / total order)
         """
         accountant = self.oms._oms.accountant
         sentry_stats = self.oms._oms.sentry.get_stats()
 
         total_latency = 0.0
         fill_count = 0
-
         for report in accountant._execution_reports:
             for fill in report.fills:
                 total_latency += fill.latency_ms if fill.latency_ms is not None else 0.0
@@ -95,14 +106,17 @@ class MetricsReporter:
 
         avg_latency = (total_latency / fill_count) if fill_count > 0 else 0.0
 
+        rejections = sentry_stats.get("violations_count", 0)
+        total_orders = fill_count + rejections
+        rejection_ratio = (rejections / total_orders * 100.0) if total_orders > 0 else 0.0
+
         return {
             "Avg Execution Latency (ms)": avg_latency,
-            "Total Sentry Blocks": sentry_stats["violations_count"],
-            "Successful Fills": fill_count
-            }
+            "Total Sentry Blocks": rejections,
+            "Successful Fills": fill_count,
+            "Rejection Ratio (%)": rejection_ratio
+        }
 
-
-        # ====================== MASTER REPORT ======================
     def print_report(self):
         """Cetak laporan lengkap dalam format rapi ke terminal."""
         pnl_report = self.generate_pnl_report()
@@ -126,10 +140,12 @@ class MetricsReporter:
         print(f"  Win Rate        : {pnl_report['Win Rate (%)']:>13.2f}%")
         print(f"  Total Trades    : {pnl_report['Total Trades']:>14}")
         print(f"  Current Drawdown: {risk_report['Current Drawdown (%)']:>13.2f}%")
+        print(f"  Max Drawdown Obs: {risk_report['Max Drawdown Observed (%)']:>13.2f}%")
 
         print("\n⚙️ SYSTEM HEALTH:")
         print(f"  Avg Latency     : {health_report['Avg Execution Latency (ms)']:>10.2f} ms")
         print(f"  Sentry Blocks   : {health_report['Total Sentry Blocks']:>14}")
+        print(f"  Rejection Ratio : {health_report['Rejection Ratio (%)']:>13.2f}%")
         print(f"  Kill Switch     : {'🚨 ENGAGED' if risk_report['Kill Switch Engaged'] else '✅ SAFE'}")
         if risk_report['Kill Switch Engaged']:
             print(f"  Reason          : {risk_report['Kill Reason']}")

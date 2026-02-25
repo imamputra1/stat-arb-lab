@@ -49,7 +49,9 @@ class Sentry:
         self._max_position_ratio = 0.25        # 25% of equity per order
         self._kill_switch_engaged = False
         self._kill_reason = ""
-        self._peak_equity = 0.0               # untuk hitung drawdown
+        self._peak_equity = 0.0             # untuk hitung drawdown
+        self._max_drawdown_observed = 0.0
+
 
     # ========== EXISTING METHODS (UNCHANGED) ==========
     def validate_order(self, request: OrderRequest) -> Result[bool, str]:
@@ -109,6 +111,10 @@ class Sentry:
         """Update puncak equity untuk perhitungan drawdown."""
         if equity > self._peak_equity:
             self._peak_equity = equity
+        if self._peak_equity > 0:
+            current_drawdown = (self._peak_equity - equity) / self._peak_equity
+            if current_drawdown > self._max_drawdown_observed:
+                self._max_drawdown_observed = current_drawdown
 
     def set_risk_limits(self,
                         max_drawdown_pct: float = None,
@@ -189,6 +195,7 @@ class Sentry:
             "kill_switch": self._kill_switch_engaged,
             "kill_reason": self._kill_reason,
             "peak_equity": self._peak_equity,
+            "max_drawdown_observed": self._max_drawdown_observed,
             "max_drawdown_pct": self._max_drawdown_pct,
             "max_position_ratio": self._max_position_ratio
         }
