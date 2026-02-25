@@ -77,9 +77,8 @@ class Sanitizer:
         """
         Compare inventory positions with broker positions.
         If a symbol exists in inventory but not in broker (or broker shows zero),
-        reset the inventory position to zero.
+        remove the inventory position entirely.
         """
-        # 1. Get current positions from broker
         broker_pos_res = await self.adapter.get_all_positions()
         if broker_pos_res.is_err():
             logger.error("Cannot fetch broker positions: %s", broker_pos_res.unwrap_err())
@@ -88,32 +87,28 @@ class Sanitizer:
         broker_positions: list[Position] = broker_pos_res.unwrap()
         broker_map = {p.symbol: p for p in broker_positions}
 
-        # 2. Iterate over inventory positions
-        inv_positions = self.inventory.get_all_positions()
-        for pos in inv_positions:
+        # Collect symbols to remove (do not modify dict while iterating)
+        to_remove = []
+        for symbol, pos in self.inventory._positions.items():
+            # Even zero‑quantity positions are considered garbage; remove them.
             if abs(pos.quantity) < 1e-9:
-                continue  # ignore zero positions
+                to_remove.append(symbol)
+                continue
 
-            broker_pos = broker_map.get(pos.symbol)
-            # Ghost if broker has no position or its quantity is effectively zero
+            broker_pos = broker_map.get(symbol)
             if broker_pos is None or abs(broker_pos.quantity) < 1e-9:
                 logger.warning(
-                    "Ghost position detected: %s (inv qty=%f) – resetting",
-                    pos.symbol, pos.quantity
+                    "Ghost position detected: %s (inv qty=%f) – removing",
+                    symbol, pos.quantity
                 )
-                # Force reset: create a zero position and assign it to inventory
-                # (Assumes InventoryManager stores positions in `_positions` dict)
-                zero_pos = Position(
-                    symbol=pos.symbol,
-                    quantity=0.0,
-                    average_entry_price=0.0,
-                    realized_pnl=0.0,
-                    unrealized_pnl=0.0,
-                    currency=pos.currency,
-                )
-                # Directly update internal dict – pragmatic, no public method exists
-                self.inventory._positions[pos.symbol] = zero_pos
-                logger.info("Reset inventory position for %s", pos.symbol)
+                to_remove.append(symbol)
+
+        # Perform deletion after iteration
+        for symbol in to_remove:
+            if symbol in self.inventory._positions:
+                del self.inventory._positions[symbol]
+                logger.info("Removed ghost position for %s", symbol)
+
 
     async def _clean_stale_orders(self) -> None:
         """
