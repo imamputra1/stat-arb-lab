@@ -10,7 +10,8 @@ from .types import (
     SignalConfig,
     SignalType,
     SignalEvent,
-    MarketObservation
+    MarketObservation,
+    MarketState
 )
 
 # 2. Factory & Assembly Line
@@ -37,6 +38,7 @@ __all__ = [
     'SignalType',
     'SignalEvent',
     'MarketObservation',
+    'MarketState',
     
     # Factory Ecosystem
     'SignalFactory',

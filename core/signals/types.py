@@ -4,12 +4,13 @@ Signal Types and Events - Protocol definitions for ORCA trading system
 
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Type, TypeVar # Tambahkan Type, TypeVar
+from typing import Dict, Any, List, TypeVar, Callable # Tambahkan Type, TypeVar
 import pandas as pd
 import time
 import json
 import uuid
 from types import MappingProxyType
+
 
 from ..shared.result import Result, Ok, Err
 T = TypeVar("T")
@@ -293,7 +294,7 @@ class MarketObservation:
         """
         return max(0, self.received_at - self.timestamp)
 
-    def get_value(self, key: str, type_cast: Type[T] = float) -> Result[T, str]:
+    def get_value(self, key: str, type_cast: Callable[[Any], T] = float) -> Result[T, str]:
         """
         Safe Extraction with Result Pattern.
         Mencegah 'KeyError' atau 'TypeError' yang sering membunuh Engine Live.
@@ -311,12 +312,15 @@ class MarketObservation:
             if raw_val is None:
                 return Err(f"Value for '{key}' is None")
                 
-            # Lakukan casting
+            # Lakukan casting dengan jaminan Callable 1 argumen
             val = type_cast(raw_val)
             return Ok(val)
             
         except (ValueError, TypeError) as e:
-            return Err(f"Cast failed for '{key}' to '{type_cast.__name__}': {str(e)}")
+            # Gunakan getattr agar aman jika type_cast tidak memiliki __name__ (misal fungsi lambda)
+            cast_name = getattr(type_cast, '__name__', str(type_cast))
+            return Err(f"Cast failed for '{key}' to '{cast_name}': {str(e)}")
+
     
     def get_price(self, asset: str = "") -> Result[float, str]:
         """

@@ -78,39 +78,54 @@ class QuantumScoreKeeper:
             missing = [c for c in required if c not in df.columns]
             if missing:
                 return Err(f"Missing required columns: {missing}")
+                
+            # --- 🛡️ KAMIKAZE OVERRIDE START ---
             if df.height < 10:
-                return Err("Data density too low for scoring")
+                dummy_metrics = PerformanceMetrics(
+                    smart_score=-99.0, composite_score=-99.0
+                )
+                return Ok(dummy_metrics)
+            # --- 🛡️ KAMIKAZE OVERRIDE END ---
 
             # 2. Extract & Convert (Aero-13 Memory Optimization)
-            equity = df["cumulative_returns"].to_numpy().astype(np.float64)
-            pos = df["position"].to_numpy().astype(np.int32)
+            # Tarik data dari Polars DataFrame menjadi NumPy Arrays untuk Numba/C-Speed
+            equity = df["cumulative_returns"].to_numpy()
+            pos = df["position"].to_numpy()
 
-            # 3. Core Metric Calculation
+            # 3. Panggil Fungsi Kalkulator Kuantitatif Anda
             risk_adj = self._calc_risk_adjusted(equity)
-            trades = self._calc_trade_metrics(equity, pos)
-            risk = self._calc_risk_metrics(equity)
-            stability = self._calc_stability_metrics(equity)
+            trade_met = self._calc_trade_metrics(equity, pos)
+            risk_met = self._calc_risk_metrics(equity)
+            stab_met = self._calc_stability_metrics(equity)
 
-            # 4. Neural-Inspired Composite Score
+            total_ret = float(equity[-1] - equity[0]) if len(equity) > 0 else 0.0
+            smart = self._calc_smart_score(risk_adj["sharpe"], trade_met["count"], trade_met["win_rate"])
+
+            # 4. Bangun Objek Metrik
             metrics = PerformanceMetrics(
-                sharpe_ratio=risk_adj["sharpe"],
-                sortino_ratio=risk_adj["sortino"],
-                calmar_ratio=risk_adj["calmar"],
-                total_return=float(equity[-1]),
-                max_drawdown=risk["max_dd"],
-                total_trades=trades["count"],
-                win_rate=trades["win_rate"],
-                profit_factor=trades["pf"],
-                monotonicity=stability["mono"],
-                stability_ratio=stability["stab"],
-                smart_score=self._calc_smart_score(risk_adj["sharpe"], trades["count"], trades["win_rate"])
+                sharpe_ratio=float(risk_adj.get("sharpe", 0.0)),
+                sortino_ratio=float(risk_adj.get("sortino", 0.0)),
+                calmar_ratio=float(risk_adj.get("calmar", 0.0)),
+                total_return=total_ret,
+                max_drawdown=float(risk_met.get("max_dd", 0.0)),
+                total_trades=int(trade_met.get("count", 0)),
+                win_rate=float(trade_met.get("win_rate", 0.0)),
+                profit_factor=float(trade_met.get("pf", 0.0)),
+                monotonicity=float(stab_met.get("mono", 0.0)),
+                stability_ratio=float(stab_met.get("stab", 0.0)),
+                smart_score=smart
             )
 
+            # 5. The Sniper Doctrine - Hitung Composite Score (Termasuk CZ Tax)
             metrics.composite_score = self._weight_score(metrics)
+
+            # 🚨 THE MISSING LINK: KEMBALIKAN HASILNYA KE SHOTGUN!
             return Ok(metrics)
 
         except Exception as e:
+            print(f"\n[!!!] CRASH DI OBJECTIVE.PY: {str(e)}")
             return Err(f"Quantum Score failure: {str(e)}")
+
 
     def _calc_risk_adjusted(self, equity: np.ndarray) -> Dict[str, float]:
         returns = np.diff(equity)
@@ -175,7 +190,7 @@ class QuantumScoreKeeper:
         # [1] The CZ Tax (Pajak Binance)
         # Asumsi total fee round-trip Arbitrase adalah 0.4% (0.004). 
         # Modif angka ini sesuai fee tier lo (VIP 0, 1, dll)
-        FEE_PER_TRADE = 0.004 
+        FEE_PER_TRADE = 0.002
         
         # [2] Hitung Net Profit setelah digorok fee
         total_fee_paid = m.total_trades * FEE_PER_TRADE

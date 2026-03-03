@@ -118,13 +118,23 @@ def create_model_summary(model: StrategyModel) -> Result[Dict[str, Any], str]:
     """Generates a standardized diagnostic summary for monitoring."""
     try:
         state_res = model.get_state()
+        
+        # --- FIX 1: Gunakan unwrap_err() dan berikan fallback ---
         if state_res.is_err():
-            return Err(f"Model State Access Failure: {state_res.error}")
+            err_msg = state_res.unwrap_err()
+            safe_err = str(err_msg) if err_msg is not None else "Unknown error"
+            return Err(f"Model State Access Failure: {safe_err}")
+        # --------------------------------------------------------
+        
+        # --- FIX 2: Type Narrowing (Assertion) sebelum dipanggil ---
+        state_data = state_res.unwrap()
+        assert state_data is not None, "State data cannot be None"
+        # -----------------------------------------------------------
         
         return Ok({
             "model_class": type(model).__name__,
             "hyperparameters": model.get_hyperparameters(),
-            "current_state_keys": list(state_res.unwrap().keys()),
+            "current_state_keys": list(state_data.keys()),
             "supports_batch": isinstance(model, BatchStrategyModel)
         })
     except Exception as e:

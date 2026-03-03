@@ -4,7 +4,6 @@ Location: research/strategy/optimization/shotgun.py
 Focus: Quantum-grade distributed computing optimized for Ryzen 5 (12 Threads).
 Architecture: Microservices Orchestration with Result Pattern & ACID Checkpoints.
 """
-
 import os
 import logging
 import time
@@ -18,17 +17,18 @@ from threading import Lock
 import pandas as pd
 import polars as pl
 from dataclasses_json import dataclass_json
+from datetime import timezone
 
 # --- PATH CONFIGURATION & SHARED SYNC ---
 import sys
 PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.absolute()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
 from core.shared import Result, Ok, Err
 from research.strategy.pipeline import AdvancedStrategyPipeline
-from research.strategy.optimization.spaces import SearchResult
+from research.strategy.optimization.spaces import SearchResult, QuantumParameterSpace
 from research.strategy.optimization.objective import QuantumScoreKeeper
+
 
 # --- INDUSTRIAL LOGGING ---
 logging.basicConfig(
@@ -48,7 +48,7 @@ class ExperimentConfig:
     end_date: str
     space_name: str
     batch_id: str
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 @dataclass_json
 @dataclass
@@ -75,15 +75,18 @@ class ExperimentResult:
 # --- ADAPTIVE LOAD BALANCER ---
 class AdaptiveLoadBalancer:
     def __init__(self, max_workers: int = None):
-        self.max_workers = max_workers or os.cpu_count()
+        cpu_cores = os.cpu_count()
+        self.max_workers = max_workers if max_workers is not None else (cpu_cores if cpu_cores is not None else 4)
         self.lock = Lock()
-        self.worker_load = [0] * self.max_workers
+        self.worker_load = [0.0] * self.max_workers
         
     def get_optimal_worker(self) -> int:
-        with self.lock: return self.worker_load.index(min(self.worker_load))
+        with self.lock:
+            return self.worker_load.index(min(self.worker_load))
     
     def update_load(self, worker_id: int, load: float):
-        with self.lock: self.worker_load[worker_id] += load
+        with self.lock:
+            self.worker_load[worker_id] += load
 
 # --- CHECKPOINT MANAGER ---
 class CheckpointManager:
@@ -95,20 +98,23 @@ class CheckpointManager:
     def create_checkpoint(self, batch_id: str, completed: List[str], total: int, config: Dict[str, Any]):
         data = {
             "batch_id": batch_id,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "completed": completed,
             "total": total,
             "config": config
         }
         path = self.checkpoint_dir / f"checkpoint_{batch_id}.json"
         with self.lock:
-            with open(path.with_suffix('.tmp'), 'w') as f: json.dump(data, f)
+            with open(path.with_suffix('.tmp'), 'w') as f:
+                json.dump(data, f)
             path.with_suffix('.tmp').rename(path)
             
     def load_checkpoint(self, batch_id: str) -> Optional[Dict[str, Any]]:
         path = self.checkpoint_dir / f"checkpoint_{batch_id}.json"
-        if not path.exists(): return None
-        with open(path, 'r') as f: return json.load(f)
+        if not path.exists():
+            return None
+        with open(path, 'r') as f:
+            return json.load(f)
 
 # --- TELEMETRY COLLECTOR ---
 class TelemetryCollector:
@@ -118,9 +124,12 @@ class TelemetryCollector:
         self.resources = {"cpu": [], "ram": []}
         
     def log_result(self, status: str):
-        if status == "SUCCESS": self.stats["success"] += 1
-        elif "FAIL" in status: self.stats["failed"] += 1
-        else: self.stats["crashed"] += 1
+        if status == "SUCCESS":
+            self.stats["success"] += 1
+        elif "FAIL" in status:
+            self.stats["failed"] += 1
+        else:
+            self.stats["crashed"] += 1
 
     def get_summary(self) -> Dict[str, Any]:
         duration = time.time() - self.start_time
@@ -155,10 +164,12 @@ class QuantumExperimentExecutor:
             )
             
             if sim_res.is_err():
-                return ExperimentResult(label=label, status="FAILED", error_message=sim_res.error, params=params)
+                return ExperimentResult(label=label, status="FAILED", error_message=sim_res.unwrap_err(), params=params)
             
             # 3. Artifact Forensic
-            exec_id = sim_res.unwrap()["id"]
+            sim_res = sim_res.unwrap()
+            assert sim_res is not None
+            exec_id = sim_res["id"]
             result_path = PROJECT_ROOT / "research" / "results" / f"arb_{config.target}_{config.anchor}_{exec_id}.parquet"
             
             if not result_path.exists():
@@ -170,9 +181,9 @@ class QuantumExperimentExecutor:
             eval_res = keeper.evaluate(df)
             
             if eval_res.is_err():
-                return ExperimentResult(label=label, status="EVAL_ERROR", error_message=eval_res.error, params=params)
-            
+                return ExperimentResult(label=label, status="EVAL_ERROR", error_message=eval_res.unwrap_err(), params=params)
             m = eval_res.unwrap()
+            assert m is not None
             return ExperimentResult(
                 label=label, status="SUCCESS", exec_id=exec_id,
                 smart_score=m.smart_score, composite_score=m.composite_score,
@@ -205,14 +216,17 @@ class HyperParallelEngine:
         # 1. Parameter Space Generation
         from research.strategy.optimization.spaces import get_parameter_space
         space_res = get_parameter_space(space_name)
-        if space_res.is_err(): return Err(space_res.error)
+        if space_res.is_err():
+            return Err(str(space_res.unwrap_err()))
         
-        space = space_res.unwrap()
+        space: QuantumParameterSpace = space_res.unwrap()
+        assert space is not None
         all_combos = []
         for res in space.generate():
             if res.is_ok(): 
                 all_combos.append(res.unwrap())
-                if max_combos and len(all_combos) >= max_combos: break
+                if max_combos and len(all_combos) >= max_combos:
+                    break
         
         # 2. Recovery Logic
         completed = []
@@ -259,14 +273,40 @@ class HyperParallelEngine:
         return Ok(output_path)
 
     def _display_leaderboard(self, df: pd.DataFrame):
-        if df.empty: return
-        success = df[df["status"] == "SUCCESS"].sort_values("smart_score", ascending=False)
+        if df.empty:
+            return
+            
+        # --- 🚨 KACAMATA X-RAY UNTUK ERROR ---
+        failed = df[df["status"] != "SUCCESS"]
+        if not failed.empty:
+            print("\n" + "🚨 LAPORAN KEGAGALAN (FAILURES)".center(100))
+            print("=" * 100)
+            # Tampilkan 5 error pertama secara penuh agar kita tahu penyebabnya
+            pd.set_option('display.max_colwidth', None) # Jangan potong teks error
+            print(failed[["status", "error_message"]].head(5).to_string(index=False))
+            print("=" * 100 + "\n")
+        # -------------------------------------
+
+        success = df[df["status"] == "SUCCESS"].sort_values(by=["smart_score"], ascending=False)
         print("\n" + "🏆 OPTIMIZATION LEADERBOARD".center(100))
         print("=" * 100)
-        cols = ["label", "smart_score", "pnl", "sharpe", "trades", "win_rate"]
-        print(success[cols].head(10).to_string(index=False))
+        
+        if success.empty:
+            print("⚠ SEMUA PELURU GAGAL MELEDAK. SILAKAN CEK LAPORAN ERROR DI ATAS! ⚠".center(100))
+        else:
+            cols = ["label", "smart_score", "pnl", "sharpe", "trades", "win_rate"]
+            print(success[cols].head(10).to_string(index=False))
         print("=" * 100 + "\n")
+
 
 if __name__ == "__main__":
     engine = HyperParallelEngine(n_jobs=-1)
-    engine.fire(target_pairs=[("DOGE", "BTC")], space_name="shotgun", max_combos=1000)
+    
+    # Targetkan eksperimen di 1 bulan data (Januari 2024) dengan 100 sampel acak
+    engine.fire(
+        target_pairs=[("DOGE", "BTC")], 
+        space_name="qr_hunt", 
+        start_date="2024-01-01", 
+        end_date="2024-01-31", 
+        max_combos=None
+    )

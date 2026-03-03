@@ -8,7 +8,7 @@ import numpy.typing as npt
 from dataclasses import dataclass, field
 from typing import Protocol, TypeAlias, Optional, TypeVar, Callable, final, Union
 from enum import Enum
-from datetime import datetime
+import datetime as dt
 
 # Import Result Pattern dari shared
 from core.shared.result import Result, Ok, Err, match_result, safe_async
@@ -76,26 +76,15 @@ class KalmanState:
     Q_adaptive: CovarianceMatrix
     innovation: float = 0.0
     nis: float = 0.0
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: dt.datetime = field(default_factory=lambda: dt.datetime.now(dt.timezone.utc))
     
     def flat_map(self, func: Callable[['KalmanState'], Result[T, E]]) -> Result[T, E]:
         """Monadic flatMap operation"""
         return func(self)
     
-    def map(self, func: Callable[['KalmanState'], T]) -> 'KalmanState':
+    def map(self, func: Callable[['KalmanState'], T]) -> T:
         """Monadic map operation"""
-        try:
-            return KalmanState(
-                x=self.x,
-                P=self.P,
-                K=self.K,
-                Q_adaptive=self.Q_adaptive,
-                innovation=self.innovation,
-                nis=self.nis,
-                timestamp=self.timestamp
-            )
-        except Exception as e:
-            raise ValueError(f"Map operation failed: {e}")
+        return func(self)
 
 # ============================================================================
 # MONADIC KALMAN FILTER INTERFACE
@@ -156,41 +145,57 @@ class AdaptiveKalmanFilter:
     # =========================================================================
     # PUBLIC UPDATE METHOD
     # =========================================================================
+
     def update(self, 
                z: float, 
                lambda_factor: float = 1.0,
                adapt: bool = True) -> Result[KalmanState, KalmanError]:
         """
-        Monadic update operation.
+        Monadic update operation (Unrolled for strict Type Checking).
         Atomic & Transactional: State self.x dan self.P hanya berubah jika semua step sukses.
-        Returns Result[KalmanState, KalmanError]
         """
         try:
             # 1. Validasi Input
             validation = self._validate_input(z, lambda_factor)
             if validation.is_err():
-                return Err(validation.unwrap_err()) # Forward error
+                err = validation.unwrap_err()
+                return Err(err if err is not None else KalmanError("Validation error"))
             
-            # 2. Chain operations secara monadic
-            # Logic: Predict -> Innovation -> Adapt Q -> Calculate Gain & Update
-            chain_result = (
-                self._predict(lambda_factor)
-                .and_then(lambda ctx: self._compute_innovation(z, ctx))
-                .and_then(lambda ctx: self._adapt_Q(ctx) if adapt else Ok(ctx))
-                .and_then(lambda ctx: self._finalize_update(ctx))
-            )
+            # 2. Predict Step
+            predict_res = self._predict(lambda_factor)
+            if predict_res.is_err():
+                err = predict_res.unwrap_err()
+                return Err(err if err is not None else KalmanError("Predict error"))
+            ctx = predict_res.unwrap()
+            assert ctx is not None, "Context cannot be None"
             
-            # 3. Simpan state ke history jika sukses
-            if chain_result.is_ok():
-                state = chain_result.unwrap()
-                # Opsional: Simpan history (commented out jika belum butuh memory overhead)
-                # self._history.append(state)
-                # if len(self._history) > 1000:
-                #     self._history = self._history[-1000:]
-                return Ok(state)
+            # 3. Compute Innovation
+            innov_res = self._compute_innovation(z, ctx)
+            if innov_res.is_err():
+                err = innov_res.unwrap_err()
+                return Err(err if err is not None else KalmanError("Innovation error"))
+            ctx = innov_res.unwrap()
+            assert ctx is not None, "Context cannot be None"
             
-            # Jika gagal di salah satu chain, return Error tanpa ubah state
-            return Err(chain_result.unwrap_err())
+            # 4. Adapt Q (Jika diaktifkan)
+            if adapt:
+                adapt_res = self._adapt_Q(ctx)
+                if adapt_res.is_err():
+                    err = adapt_res.unwrap_err()
+                    return Err(err if err is not None else KalmanError("Adapt Q error"))
+                ctx = adapt_res.unwrap()
+                assert ctx is not None, "Context cannot be None"
+                
+            # 5. Finalize Update
+            final_res = self._finalize_update(ctx)
+            if final_res.is_err():
+                err = final_res.unwrap_err()
+                return Err(err if err is not None else KalmanError("Finalize error"))
+            state = final_res.unwrap()
+            assert state is not None, "State cannot be None"
+            
+            # Sukses total!
+            return Ok(state)
             
         except Exception as e:
             return Err(KalmanError(f"Unexpected panic in update chain: {str(e)}"))
@@ -252,50 +257,37 @@ class AdaptiveKalmanFilter:
     def _adapt_Q(self, ctx: '_UpdateContext') -> Result['_UpdateContext', KalmanError]:
         """
         [STEP 3] Adaptive Q Injection (Shock Absorber).
-        Mendeteksi 'market shock' menggunakan NIS (Normalized Innovation Squared).
-        Jika shock terdeteksi, Q dinaikkan sementara agar filter cepat adaptasi.
         """
         try:
+            # --- TUNTUTAN LINTER: JAMINAN BAHWA NILAI TIDAK NONE ---
+            assert ctx.S is not None, "S matrix cannot be None in adapt_Q"
+            assert ctx.y is not None, "y matrix cannot be None in adapt_Q"
+            # -------------------------------------------------------
+
             # 1. Hitung NIS: y.T * inv(S) * y
-            # Ini adalah 'Z-Score' versi matriks multidimensi.
-            # Mengukur seberapa jauh harga aktual (measurement) dari prediksi kita.
             inv_S = np.linalg.inv(ctx.S)
             nis = (ctx.y.T @ inv_S @ ctx.y)[0, 0]
             
             # Threshold Statistical (Chi-square distribution).
-            # Nilai 4.0 kira-kira setara 95% confidence interval untuk 1 Degree of Freedom.
-            # Artinya: Kalau error > 2 standard deviasi, kita anggap itu SHOCK.
             SHOCK_THRESHOLD = 4.0 
             
             # Jika terdeteksi Shock, lakukan 'Q-Boosting'
             if nis > SHOCK_THRESHOLD:
-                # Calculate Boost Factor
-                # Linear scaling: semakin kaget modelnya, semakin besar boost Q.
-                # Rumus: (NIS / Threshold) - 1.0 (biar mulai dari 0 saat di threshold)
-                # Kita pakai max(1.0, ...) biar minimal boost x1 (tetap pakai base_Q)
                 scale = max(1.0, nis / 2.0)
-                
-                # Safety Cap: Jangan sampai boost > 50x (biar matriks gak meledak)
                 scale = min(scale, 50.0) 
                 
-                # Apply Boost ke Base Q
                 Q_boost = self.base_Q * scale
                 
-                # UPDATE P_PRED DENGAN Q BARU
-                # Logika: P_new = P_old - Q_base (hapus noise lama) + Q_boost (tambah noise baru)
                 ctx.P_pred = ctx.P_pred - self.base_Q + Q_boost
                 ctx.Q_used = Q_boost
                 
                 # CRITICAL: Recalculate S (Innovation Covariance)
-                # Karena P_pred berubah, S = H*P*H' + R juga pasti berubah.
-                # Kalau S gak dihitung ulang, Kalman Gain (K) bakal salah.
                 ctx.S = (self.H @ ctx.P_pred @ self.H.T) + self.R
                 
                 # Re-check singularity setelah update S
                 if np.abs(np.linalg.det(ctx.S)) < 1e-15:
                      return Err(SingularMatrixError("S matrix became singular after Adaptive Q boost"))
 
-            # Return context yang (mungkin) sudah dimodifikasi
             return Ok(ctx)
 
         except np.linalg.LinAlgError:
@@ -306,6 +298,11 @@ class AdaptiveKalmanFilter:
     def _finalize_update(self, ctx: '_UpdateContext') -> Result[KalmanState, KalmanError]:
         """Step 4: Calculate Gain, Update State & Save to Self"""
         try:
+            # --- 1. TYPE NARROWING (Memuaskan Linter) ---
+            assert ctx.S is not None, "S matrix missing"
+            assert ctx.y is not None, "y matrix missing"
+            # --------------------------------------------
+
             # Kalman Gain: K = P_pred * H.T * inv(S)
             K = ctx.P_pred @ self.H.T @ np.linalg.inv(ctx.S)
             
@@ -315,8 +312,8 @@ class AdaptiveKalmanFilter:
             # Covariance Update (Joseph Form for Stability)
             # P = (I - KH)P(I - KH).T + KRK.T
             # Ini menjamin P tetap Positive Definite
-            I = np.eye(self.n_states)
-            I_KH = I - (K @ self.H)
+            identity_mat = np.eye(self.n_states)  # <-- 2. FIX E741: Ganti nama 'I' jadi 'identity_mat'
+            I_KH = identity_mat - (K @ self.H)
             new_P = (I_KH @ ctx.P_pred @ I_KH.T) + (K @ self.R @ K.T)
             
             # --- TRANSACTION COMMIT ---
@@ -330,11 +327,12 @@ class AdaptiveKalmanFilter:
                 P=new_P.copy(),
                 K=K.copy(),
                 Q_adaptive=ctx.Q_used.copy(),
-                timestamp=datetime.now()
+                timestamp=dt.datetime.now(dt.timezone.utc)  # <-- 3. FIX DATETIME SESUAI FORMAT AWAL
             ))
             
         except Exception as e:
             return Err(KalmanError(f"Final update step failed: {str(e)}"))
+
 
     # ============================================================================
     # MONADIC QUERY OPERATIONS
@@ -438,6 +436,22 @@ class KalmanFactory:
             shock_threshold=9.0  # 3-sigma
         )
 
+    @staticmethod
+    def create_adaptive_filter(config: KalmanConfig) -> Result[AdaptiveKalmanFilter, str]:
+        """
+        Factory method khusus untuk membuat AdaptiveKalmanFilter.
+        Menerima konfigurasi lengkap (termasuk initial_value) dan mengembalikan Result.
+        """
+        # Validasi dasar: pastikan mode adaptasi ditentukan (opsional, tergantung desain)
+        if config.adaptation_mode is None:
+            return Err("Adaptation mode must be specified for adaptive filter")
+        
+        # Jika perlu, tambahkan logika pemilihan tipe filter berdasarkan konfigurasi
+        # Misalnya: jika state_dim > 2, gunakan implementasi berbeda
+        
+        # Delegasikan ke method create yang sudah ada (yang mengembalikan Result)
+        return KalmanFactory.create(config)
+
 # ============================================================================
 # MONADIC BATCH PROCESSOR
 # ============================================================================
@@ -452,7 +466,7 @@ class KalmanBatchProcessor:
         self.filter_result = filter_result
         self.states: list[KalmanState] = []
         self.errors: list[tuple[int, str]] = []  # (index, error_message)
-    
+
     def process_batch(self, 
                      measurements: list[float],
                      lambda_factors: Optional[list[float]] = None) -> Result[list[KalmanState], str]:
@@ -460,10 +474,18 @@ class KalmanBatchProcessor:
         Process batch secara monadic.
         Jika ada error, semua state sejak error akan di-discard.
         """
+        # --- FIX ERROR 1: Berikan Fallback String ---
         if self.filter_result.is_err():
-            return Err(self.filter_result.unwrap_err())
+            err = self.filter_result.unwrap_err()
+            return Err(err if err is not None else "Unknown filter initialization error")
+        # --------------------------------------------
         
         filter_instance = self.filter_result.unwrap()
+        
+        # --- FIX ERROR 2: Type Narrowing (Assertion) ---
+        assert filter_instance is not None, "Filter instance cannot be None"
+        # -----------------------------------------------
+        
         states: list[KalmanState] = []
         
         if lambda_factors is None:
@@ -489,7 +511,7 @@ class KalmanBatchProcessor:
         
         self.states.extend(states)
         return Ok(states)
-    
+
     def rollback(self, steps: int = 1) -> Result[None, str]:
         """Monadic rollback operation"""
         if self.filter_result.is_err():
@@ -501,15 +523,18 @@ class KalmanBatchProcessor:
         # Rollback states
         self.states = self.states[:-steps]
         
+        # --- FIX: Ekstrak dan berikan Type Narrowing (Assertion) ---
+        filter_instance = self.filter_result.unwrap()
+        assert filter_instance is not None, "Filter instance cannot be None in rollback"
+        # -----------------------------------------------------------
+        
         # Rollback filter internal state
         if self.states:
             last_state = self.states[-1]
-            filter_instance = self.filter_result.unwrap()
             filter_instance.x = last_state.x.copy()
             filter_instance.P = last_state.P.copy()
         else:
             # Reset ke initial
-            filter_instance = self.filter_result.unwrap()
             filter_instance.reset(filter_instance.config.initial_value)
         
         return Ok(None)
@@ -526,8 +551,9 @@ class KalmanBatchProcessor:
             if arr.ndim == 0:
                 if shape == (1, 1):
                     return arr.reshape(1, 1)
-                # Kalau skalar dipaksa jadi diagonal matrix (untuk R atau Q)
-                return np.eye(shape[0]) * float(x)
+                # --- FIX: Gunakan float(arr.item()) alih-alih float(x) ---
+                return np.eye(shape[0]) * float(arr.item())
+                # ---------------------------------------------------------
             
             # Kasus 2: Array 1D (2,) -> ubah ke (2, 1) atau (1, 2)
             if arr.ndim == 1:
@@ -541,6 +567,7 @@ class KalmanBatchProcessor:
             return arr
         except Exception as e:
             raise KalmanError(f"Matrix casting failed: {str(e)}")
+
 
 # ============================================================================
 # MONADIC OPERATOR FUNCTIONS
@@ -565,6 +592,8 @@ def compose_kalman_operations(
         return current_result
     
     return composed
+    
+
 
 def with_retry(
     operation: Callable[[KalmanState], Result[KalmanState, KalmanError]],
@@ -589,6 +618,13 @@ def with_retry(
                 # Reset sedikit noise
                 state = state.map(lambda s: s)  # Placeholder untuk recovery logic
                 continue
+            else:
+                # Jika error selain NumericalStability, langsung keluar dari loop
+                break
+        
+        # --- FIX: Type Narrowing & Fallback ---
+        if last_error is None:
+            return Err(KalmanError("Operation failed without specific error or max_retries=0"))
         
         return Err(last_error)
     
@@ -597,7 +633,6 @@ def with_retry(
 # ============================================================================
 # ASYNC MONADIC OPERATIONS
 # ============================================================================
-
 @safe_async
 async def async_kalman_update(
     filter_instance: AdaptiveKalmanFilter,
@@ -607,17 +642,18 @@ async def async_kalman_update(
     """
     Async monadic update untuk integration dengan async systems.
     """
-    return filter_instance.update(z, lambda_factor)
-
-@safe_async
-async def async_batch_process(
-    processor: KalmanBatchProcessor,
-    measurements: list[float]
-) -> Result[list[KalmanState], str]:
-    """
-    Async batch processing.
-    """
-    return processor.process_batch(measurements)
+    # Eksekusi fungsi update yang mengembalikan Result[KalmanState, KalmanError]
+    result = filter_instance.update(z, lambda_factor)
+    
+    # --- FIX: Casting dari KalmanError menjadi string ---
+    if result.is_err():
+        err = result.unwrap_err()
+        return Err(str(err) if err is not None else "Unknown async update error")
+    
+    state = result.unwrap()
+    assert state is not None, "State cannot be None"
+    
+    return Ok(state)
 
 # ============================================================================
 # FACADE EXPORTS

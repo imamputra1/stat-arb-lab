@@ -65,6 +65,7 @@ class BaseStrategy(ABC, Generic[T]):
     
     # ========== DUAL-PATH IMPLEMENTATIONS ==========
     
+    @abstractmethod
     def generate_signals(self, df: pd.DataFrame) -> Result[pd.DataFrame, str]:
         """
         Research Path: Batch processing of historical data.
@@ -75,8 +76,9 @@ class BaseStrategy(ABC, Generic[T]):
         Returns:
             DataFrame with original data + signal columns
         """
-        pass
+        raise NotImplementedError("Subclasses must implement generate_signals")
     
+    @abstractmethod
     def evaluate_state(self, obs: dict) -> Result[SignalEvent, str]:
         """
         Live Path: Real-time evaluation of single observation.
@@ -87,8 +89,7 @@ class BaseStrategy(ABC, Generic[T]):
         Returns:
             SignalEvent with trading decision
         """
-        pass
-
+        raise NotImplementedError("Subclasses must implement evaluate_state")
 
     # ==========================================================================
     # STATE MANAGEMENT (GENERIC)
