@@ -12,13 +12,13 @@ from typing import Optional, Tuple, Dict, Any, List, Union, cast
 from dataclasses import dataclass, field
 import logging
 
+
 # IMPORT CHIP GPU (MATH KERNEL)
 from core.math import (
     AdaptiveKalmanFilter,
     KalmanConfig,
     KalmanFactory,
     KalmanState,
-    KalmanError,
     AdaptationMode
 )
 
@@ -76,8 +76,7 @@ class KalmanMeanReversion(BaseStrategy):
                  signal_config: SignalConfig,
                  math_config: Optional[KalmanConfig] = None):
         super().__init__(name=signal_config.name, version=signal_config.version)
-        safe_config = cast(KalmanConfig, self.math_config)
-
+        
         self.sig_config = signal_config
 
         if math_config is not None:
@@ -85,14 +84,15 @@ class KalmanMeanReversion(BaseStrategy):
         else:
             # Default Safe Values
             self.math_config = KalmanConfig(
-                R=0.1,
-                Q=1e-5,
+                R=9.215e-7,
+                Q=1e-8,
                 initial_value=0.0,
                 adaptation_mode=AdaptationMode.NIS_THRESHOLD
             )
-        self.warmup_required = getattr(self.sig_config, 'warmup_ticks', self.sig_config.volatility_window)
+
+        self._warmup_required = getattr(self.sig_config, 'warmup_ticks', self.sig_config.volatility_window)
         self._internal_state = KalmanMRState()
-        self._kalman_filter = KalmanFactory.create_adaptive_filter(safe_config)
+        self._kalman_filter =  None
         self._filter_initialized = False
         self._warmup_count = 0
         self._last_processed_timestamp = 0
@@ -137,11 +137,12 @@ class KalmanMeanReversion(BaseStrategy):
             logger.error(f"Filter initialization error: {e}")
             return Err(f"Filter initialization error: {str(e)}")
 
-    def _process_observation(self, spread: float, timestamp: int) -> Result[SignalEvent, str]:
+    def _process_observation(self, spread: float, timestamp: int, symbol: str = "UNKNOWN") -> Result[SignalEvent, str]:
         """
         Proses observasi tunggal dengan modulasi Q berdasarkan volatilitas (Z‑score clipped 0‑3).
         """
         try:
+            self._internal_state.price_pair = (symbol, "")
             # --- VALIDASI INPUT ---
             if not isinstance(spread, (int, float)) or not np.isfinite(spread):
                 return self._neutral_signal(
@@ -151,10 +152,39 @@ class KalmanMeanReversion(BaseStrategy):
                 )
 
             # --- CEK WARMUP DI AWAL ---
-            is_warmup = len(self._internal_state.spread_history) < self.WARMUP_REQUIRED
-            if len(self._internal_state.spread_history) == self.warmup_required:
-                logging.info(f"🔥 Warmup complete after {self.warmup_required} observations")
+            if not hasattr(self, '_internal_state') or self._internal_state is None:
+                self._internal_state = KalmanMRState()
 
+            self._internal_state.observation_count += 1
+
+
+            self._internal_state.spread_history.append(spread)
+            window = getattr(self.sig_config, 'volatility_window', 50)
+
+            if len(self._internal_state.spread_history) >= window:
+                recent = self._internal_state.spread_history[-window:]
+                current_vol = float(np.std(recent))
+            else:
+                current_vol = 0.0
+
+            if not hasattr(self._internal_state, 'volatility_history'):
+                self._internal_state.volatility_history = []
+            self._internal_state.volatility_history.append(current_vol)
+
+            # --- WARMUP CHECK ---
+            if len(self._internal_state.spread_history) < self._warmup_required:
+                self._warmup_count += 1
+                return Ok(SignalEvent(
+                    timestamp=timestamp,
+                    signal_type=SignalType.NEUTRAL,
+                    strength=0.0,
+                    symbol=self._internal_state.price_pair[0] if self._internal_state.price_pair else "UNKNOWN",
+                    strategy_name=self.sig_config.name,
+                    _metadata={
+                        "status": "warmup",
+                        "factor_q": float(getattr(self._internal_state, 'last_factor_q', 1.0)) # 🛠️ TAMBAHKAN INI
+                    }
+                ))            
 
             # --- DETEKSI GAP WAKTU ---
             if self._last_processed_timestamp > 0:
@@ -163,7 +193,6 @@ class KalmanMeanReversion(BaseStrategy):
                     logger.warning(f"⚠️ Gap waktu {gap_ms/1000:.1f}s terdeteksi. Reset filter.")
                     self.reset()
             self._last_processed_timestamp = timestamp
-            self._internal_state.observation_count += 1
 
             # --- LAZY INIT KALMAN FILTER ---
             if self._kalman_filter is None:
@@ -174,7 +203,7 @@ class KalmanMeanReversion(BaseStrategy):
                         "kalman_init_failed",
                         init_result.unwrap_err() or "Unknown initialization error"
                     )
-                self._kalman_filter = cast(AdaptiveKalmanFilter, init_result.unwrap_err())
+                self._kalman_filter = cast(AdaptiveKalmanFilter, init_result.unwrap())
                 self._filter_initialized = True
 
             if self._kalman_filter is None:
@@ -184,39 +213,32 @@ class KalmanMeanReversion(BaseStrategy):
                     "Critical: Kalman Filter gagal diinisialisasi"
                 )
 
-            # --- UPDATE SPREAD HISTORY & HITUNG VOLATILITAS ---
-            self._internal_state.spread_history.append(spread)
-            window = self.sig_config.volatility_window
-            if len(self._internal_state.spread_history) >= window:
-                recent = self._internal_state.spread_history[-window:]
-                current_vol = float(np.std(recent))
-            else:
-                current_vol = 0.0
-
-            # --- SIMPAN VOLATILITAS KE BUFFER ---
-            self._internal_state.volatility_history.append(current_vol)
-
             # --- HITUNG Z‑SCORE VOLATILITAS (JIKA BUFFER CUKUP) ---
             factor_q = 1.0
             z_vol_clipped = 0.0
-            if len(self._internal_state.volatility_history) >= self.VOL_BUFFER_MIN:
+            vol_buffer_size = getattr(self, 'VOL_BUFFER_MIN', 100)
+            vol_sensitivity = getattr(self, 'VOL_SENSITIVITY', 5.0)
+
+            if len(self._internal_state.volatility_history) >= vol_buffer_size:
                 vol_arr = np.array(self._internal_state.volatility_history)
+                vol_arr = vol_arr[np.isfinite(vol_arr)]
                 mean_vol = np.mean(vol_arr)
                 std_vol = np.std(vol_arr)
                 if std_vol > 1e-12:
                     z_vol = (current_vol - mean_vol) / std_vol
                     # Clip hanya sisi positif: [0, 3] – Q tidak pernah dikecilkan
-                    z_vol_clipped = np.clip(z_vol, 0.0, 3.0)
-                    factor_q = 1.0 + self.VOL_SENSITIVITY * z_vol_clipped
+                    z_vol_clipped = np.clip(z_vol, 0.0, 5.0)
+
+                    factor_q = 1.0 + (vol_sensitivity * z_vol_clipped)
                     if factor_q < 1.0:
                         logger.warning(...)
                         factor_q = 1.0
+                    factor_q = min(max(factor_q, 1.0), 50.0)
 
             # --- TERAPKAN FAKTOR Q SEMENTARA ---
             kf = cast(AdaptiveKalmanFilter, self._kalman_filter)
             self._internal_state.last_factor_q = float(factor_q)
             orig_base_Q = kf.base_Q.copy()
-
             kf.base_Q = orig_base_Q * float(factor_q)
 
             # --- PROSES KALMAN UPDATE ---
@@ -238,23 +260,13 @@ class KalmanMeanReversion(BaseStrategy):
                     "z_vol_clipped": z_vol_clipped
                 }
             )
-
             # --- KEMBALIKAN Q KE NILAI ASLI ---
             kf.base_Q = orig_base_Q
-
-            # --- JIKA WARMUP, LANGSUNG RETURN NEUTRAL ---
-            if is_warmup:
-                return self._neutral_signal(
-                    timestamp,
-                    "warmup",
-                    f"Warmup: {len(self._internal_state.spread_history)}/{self.WARMUP_REQUIRED}",
-                    status="warmup"
-                )
 
             # --- Jika sudah warmup, lanjutkan generate sinyal normal ---
             return match_result(
                 update_result,
-                on_ok=lambda state: self._generate_signal_from_state(state, spread, timestamp),
+                on_ok=lambda state: self._on_kalman_update_ok(state, spread, timestamp),
                 on_err=lambda err: self._handle_kalman_error(err, spread, timestamp)
             )
 
@@ -265,6 +277,11 @@ class KalmanMeanReversion(BaseStrategy):
                 "unhandled_exception",
                 str(e)
             )
+
+    def _on_kalman_update_ok(self, state: KalmanState, spread: float, timestamp: int) -> Result[SignalEvent, str]:
+        """Helper fungsional untuk memproses state Kalman yang sukses (Linter-Proof)."""
+        self._internal_state.consecutive_errors = 0
+        return self._generate_signal_from_state(state, spread, timestamp)
 
     def _extract_spread(self, data: Union[dict, pd.Series, MarketObservation]) -> Result[float, str]:
         """Extract spread dari berbagai format data."""
@@ -306,15 +323,19 @@ class KalmanMeanReversion(BaseStrategy):
             float_x = float(val_x)
             float_y = float(val_y)
 
+            if float_y <= 0 or float_x <= 0:
+                return Err(f"Zero or negative price detected: {float_y}, {float_x}")
+
             if not np.isfinite(float_y) or not np.isfinite(float_x):
                 return Err(f"Non-finite price detected: {val_y}, {val_x}")
 
             return Ok(self._calculate_spread(val_y, val_x))
+
         except Exception as e:
             return Err(f"Extract failed: {str(e)}")
 
     def _extract_spread_from_dict(self, data: dict) -> Result[float, str]:
-        spread_columns = ['spread', 'spread_DOGE', 'beta_DOGE_BTC', 'log_spread']
+        spread_columns = ['spread', 'log_spread', 'target_spread']
         for col in spread_columns:
             if col in data:
                 value = data[col]
@@ -327,6 +348,8 @@ class KalmanMeanReversion(BaseStrategy):
                 p_y = float(data[price_cols[0]])
                 p_x = float(data[price_cols[1]])
                 if np.isfinite(p_y) and np.isfinite(p_x):
+                    if self._internal_state.price_pair == ("", ""):
+                        self._internal_state.price_pair = (price_cols[0].replace('close_', ''), price_cols[1].replace('close_', ''))
                     return Ok(self._calculate_spread(p_y, p_x))
             except (ValueError, TypeError, KeyError):
                 pass
@@ -366,7 +389,7 @@ class KalmanMeanReversion(BaseStrategy):
             # --------------------------------------------
 
             # 1. Cari kolom spread langsung
-            spread_columns = ['spread', 'spread_DOGE', 'beta_DOGE_BTC', 'log_spread']
+            spread_columns = ['spread', 'log_spread', 'target_spread']
             for col in spread_columns:
                 val = _get_scalar_float(col)
                 if val is not None:
@@ -416,43 +439,50 @@ class KalmanMeanReversion(BaseStrategy):
     def _generate_signal_from_state(self, state: KalmanState, spread: float, timestamp: int) -> Result[SignalEvent, str]:
         """Menghasilkan sinyal trading dengan State-Aware Engine murni (Tanpa OMS Dependency)."""
         try:
+            if not np.isfinite(state.x[0, 0]) or not np.isfinite(state.P[0, 0]):
+                return self._neutral_signal(timestamp, "numerical_instability", "State contains NaN")
             estimate = float(state.x[0, 0])
-            _ = float(state.P[0, 0])
             residual = spread - estimate
 
+            current_factor_q = float(getattr(self._internal_state, 'last_factor_q', 1.0))
+
             # --- WARMUP CHECK ---
-            if len(self._internal_state.spread_history) < self.WARMUP_REQUIRED:
-                self._warmup_count += 1
-                return Ok(SignalEvent(
-                    timestamp=timestamp,
-                    signal_type=SignalType.NEUTRAL,
-                    strength=0.0,
-                    symbol=self._internal_state.price_pair[0] if self._internal_state.price_pair else "UNKNOWN",
-                    strategy_name=self.sig_config.name,
-                    _metadata={"status": "warmup"}
-                ))
+            # FIX: Gunakan _warmup_required agar Unit Test (50 vs 100) tetap lulus
+            # if len(self._internal_state.spread_history) < self._warmup_required:
+            #    self._warmup_count += 1
+            #    return Ok(SignalEvent(
+            #        timestamp=timestamp,
+            #        signal_type=SignalType.NEUTRAL,
+            #        strength=0.0,
+            #        symbol=self._internal_state.price_pair[0] if getattr(self._internal_state, 'price_pair', None) else "UNKNOWN",
+            #        strategy_name=self.sig_config.name,
+            #        _metadata={
+            #            "status": "warmup",
+            #            "factor_q": current_factor_q
+            #        }
+            #    ))
 
             # --- Z-SCORE CALCULATION ---
-            if len(self._internal_state.spread_history) >= self.sig_config.volatility_window:
-                recent = self._internal_state.spread_history[-self.sig_config.volatility_window:]
-                volatility = float(np.std(recent))
-            else:
-                volatility = float(np.std(self._internal_state.spread_history))
-                
-            volatility = max(volatility, 1e-9)
+            # Inovasi Varians (S) = P + R
+            
+            kalman_variance = float(state.P[0, 0]) + getattr(self.math_config, 'R', 0.001)
+
+            
+            # 🧠 FIX MATEMATIKA: Volatilitas adalah Standar Deviasi (Akar Kuadrat dari Varians)
+            volatility = float(np.sqrt(max(kalman_variance, 1e-18)))
+            volatility = max(volatility, 1e-9) # Pengaman dari pembagian dengan nol
+            
             zscore = residual / volatility
             self._internal_state.last_zscore = float(zscore)
 
             # ==========================================================
             # 🧠 THE SURGERY: STATE-AWARE SIGNAL ENGINE (STANDALONE)
             # ==========================================================
-            # Kita gunakan enum last_signal sebagai memori internal sementara untuk R&D.
-            # (Saat live nanti, ini bisa diganti dengan memanggil OMS Inventory)
             current_position = self._internal_state.last_signal 
             final_signal_type = SignalType.NEUTRAL
             
-            entry_z = self.sig_config.entry_z_score
-            exit_z = self.sig_config.exit_z_score
+            entry_z = getattr(self.sig_config, 'entry_z_score', 2.0)
+            exit_z = getattr(self.sig_config, 'exit_z_score', 0.5)
             stop_z = getattr(self.sig_config, 'stop_loss_z', 4.0)
 
             # --- LOGIKA KEPUTUSAN ANTI-JUMP ---
@@ -492,7 +522,9 @@ class KalmanMeanReversion(BaseStrategy):
                     "zscore": float(zscore),
                     "spread": float(spread),
                     "estimate": float(estimate),
-                    "volatility": float(volatility)
+                    "volatility": float(volatility),
+                    "kalman_variance": float(kalman_variance), # Ditambahkan untuk diagnostic
+                    "factor_q": current_factor_q # 🛠️ TAMBAHKAN INI
                 }
             ))
             
@@ -501,135 +533,132 @@ class KalmanMeanReversion(BaseStrategy):
             return self._neutral_signal(timestamp, "signal_gen_error", str(e))
 
 
-    def _determine_signal(self, zscore: float) -> Tuple[SignalType, float]:
-        entry_z = self.sig_config.entry_z_score
-        exit_z = self.sig_config.exit_z_score
-        stop_z = self.sig_config.stop_loss_z
-
-        abs_z = abs(zscore)
-        if abs_z > stop_z:
-            return SignalType.STOP, zscore
-        if abs_z < exit_z:
-            return SignalType.EXIT, zscore
-        if zscore > entry_z:
-            return SignalType.SELL, zscore
-        if zscore < -entry_z:
-            return SignalType.BUY, zscore
-        return SignalType.NEUTRAL, zscore
-
-    def _handle_kalman_error(self, error: KalmanError, spread: float, timestamp: int) -> Result[SignalEvent, str]:
+    def _handle_kalman_error(self, error: Any, spread: float, timestamp: int) -> Result[SignalEvent, str]:
+        """Menangani error dari Kalman Filter dengan mekanisme Self-Healing."""
         self._internal_state.consecutive_errors += 1
-        if self._internal_state.consecutive_errors > 3:
-            logger.error("Too many consecutive Kalman errors, resetting filter")
+        
+        # Logika Self-Healing Anda
+        if self._internal_state.consecutive_errors >= 3:
+            logger.error(f"Too many consecutive Kalman errors ({self._internal_state.consecutive_errors}). Resetting filter.")
             self.reset()
+            
+        # Metadata disesuaikan dengan standar Unit Test & OMS
         metadata = {
-            "error": str(error),
-            "spread": spread,
+            "error": "kalman_update_error",
+            "error_detail": str(error),
+            "spread": float(spread),
             "consecutive_errors": self._internal_state.consecutive_errors,
-            "filter_state": "degraded"
+            "status": "degraded"
         }
+        
+        # Bungkusan SignalEvent lengkap (Anti-Crash)
         return Ok(SignalEvent(
             timestamp=timestamp,
             signal_type=SignalType.NEUTRAL,
             strength=0.0,
+            symbol=self._internal_state.price_pair[0] if getattr(self._internal_state, 'price_pair', None) else "UNKNOWN",
+            strategy_name=self.sig_config.name,
             _metadata=metadata
         ))
 
     def _neutral_signal(self, timestamp: int, error_code: str, error_msg: str, status: str = "degraded") -> Result[SignalEvent, str]:
-        """Helper: buat sinyal NEUTRAL dengan metadata error."""
+        """Helper: buat sinyal NEUTRAL dengan metadata error dan konsistensi telemetri."""
+        
+        # 1. Ekstraksi Symbol Super Aman (Defensive)
+        pair_tuple = getattr(self._internal_state, 'price_pair', None)
+        symbol_name = pair_tuple[0] if pair_tuple and len(pair_tuple) > 0 and pair_tuple[0] else "UNKNOWN"
+        
+        # 2. Ambil factor_q terakhir untuk Dashboard / Test Suite
+        current_factor_q = float(getattr(self._internal_state, 'last_factor_q', 1.0))
+
         return Ok(SignalEvent(
             timestamp=timestamp,
             signal_type=SignalType.NEUTRAL,
             strength=0.0,
-            symbol=self._internal_state.price_pair[0] if self._internal_state.price_pair else "UNKNOWN",
+            symbol=symbol_name,
             strategy_name=self.sig_config.name,
             _metadata={
                 "error": error_code,
                 "error_detail": error_msg,
-                "status": status
+                "status": status,
+                "factor_q": current_factor_q  # 🛠️ Telemetri tetap hidup meski bot error!
             }
         ))
 
-    # ========== DUAL-PATH PROCESSING ==========
 
     def generate_signals(self, df: pd.DataFrame) -> Result[pd.DataFrame, str]:
-        """Batch processing untuk backtest."""
+        """Batch processing untuk backtest (100% Agnostik & Performa Tinggi)."""
         try:
             self.monitor.start_timer("batch_processing")
+            
+            # 1. Validasi Awal
             if df.empty:
                 return Err("Empty DataFrame provided")
             if 'timestamp' not in df.columns:
                 return Err("DataFrame must have 'timestamp' column")
 
-            price_cols = [col for col in df.columns if col.startswith('close_')]
-            if len(price_cols) < 2:
-                return Err(f"Need at least 2 price columns. Found: {price_cols}")
+            # 2. Persiapan State
+            self.reset()
+            sim_symbol = str(df['symbol'].iloc[0]) if 'symbol' in df.columns else "BACKTEST_SIM"
+            results = []
 
-            # Reset state untuk batch baru
-            self._internal_state = KalmanMRState()
-            self._kalman_filter = None
-            self._filter_initialized = False
-            self._last_processed_timestamp = 0
+            # 3. Iterasi - Gunakan to_dict('records') untuk performa 3x lebih cepat dibanding iterrows
+            records = df.to_dict('records')
 
-            signals = []
-            for _, row in df.iterrows():
-                raw_ts = row['timestamp']
-                ts_int: int = 0
-                if isinstance(raw_ts, pd.Timestamp):
-                    ts_int = int(raw_ts.timestamp() * 1000)
-                elif isinstance(raw_ts, (int, float)):
-                    ts_int = int(raw_ts)
+            for row in records:
+                # --- JALUR AGNOSTIK TOTAL ---
+                # Kita tidak lagi membedah kolom di sini. 
+                # Cukup lempar seluruh dict 'row' ke evaluate_state.
+                # evaluate_state sudah kita desain untuk bisa menangani dict secara cerdas.
+                
+                eval_result = self.evaluate_state(row)
+                
+                # --- EKSTRAKSI HASIL ---
+                if eval_result.is_ok():
+                    sig = cast(SignalEvent, eval_result.unwrap())
                 else:
-                    try:
-                        # FIX 1: Casting raw_ts ke str() memaksa linter melihat tipe data valid
-                        ts_int = int(pd.Timestamp(str(raw_ts)).timestamp() * 1000)
-                    except Exception:
-                        ts_int = 0
-
-                spread_result = self._extract_spread(row)
-                if spread_result.is_err():
-                    err_spread = spread_result.unwrap_err()
-                    signals.append(SignalEvent(
-                        timestamp=ts_int,
+                    # Fallback jika terjadi error pada baris tertentu
+                    err_msg = str(eval_result.unwrap_err())
+                    # Parsing timestamp mentah untuk fallback agar baris tetap sinkron
+                    raw_ts = row.get('timestamp', 0)
+                    sig = SignalEvent(
+                        timestamp=0, # Akan diupdate di bawah
                         signal_type=SignalType.NEUTRAL,
                         strength=0.0,
-                        _metadata={"error": str(err_spread) if err_spread is not None else "Extract error"}
-                    ))
-                    continue
+                        symbol=sim_symbol,
+                        strategy_name=self.sig_config.name,
+                        _metadata={"status": "error", "error": err_msg}
+                    )
 
-                # FIX 2: Type Narrowing dengan assert sebelum float casting
-                spread_val = spread_result.unwrap()
-                assert spread_val is not None, "Spread cannot be None"
-                spread = float(spread_val)
-                
-                # Proses observasi
-                signal_result = self._process_observation(spread, ts_int)
-                
-                # FIX 3: Type Narrowing dan fallback untuk string pesan error
-                if signal_result.is_err():
-                    err_msg = signal_result.unwrap_err()
-                    safe_err_str = str(err_msg) if err_msg is not None else "Unknown process error"
-                    neutral_fallback = self._neutral_signal(ts_int, "process_err", safe_err_str)
-                    
-                    fallback_val = neutral_fallback.unwrap()
-                    assert fallback_val is not None, "Fallback signal cannot be None"
-                    signals.append(fallback_val)
-                else:
-                    sig_val = signal_result.unwrap()
-                    assert sig_val is not None, "Signal cannot be None"
-                    signals.append(sig_val)
+                # --- PENYUSUNAN HASIL (DRY - Don't Repeat Yourself) ---
+                # Mengambil metadata dengan aman
+                meta = sig.metadata
+                results.append({
+                    'timestamp': row['timestamp'], # Tetap gunakan timestamp asli dari input
+                    'signal_type': sig.signal_type.value,
+                    'signal_type_name': sig.signal_type.name,
+                    'signal_strength': float(sig.strength),
+                    'z_score': float(meta.get('zscore', 0.0)),
+                    'spread_val': float(meta.get('spread', 0.0)),
+                    'estimate': float(meta.get('estimate', 0.0)),
+                    'volatility': float(meta.get('volatility', 0.0)),
+                    'factor_q': float(meta.get('factor_q', 1.0)),
+                    'status': str(meta.get('status', 'active')),
+                    'error': str(meta.get('error', '')),
+                })
 
-            result_df = df.copy()
-            result_df['signal_type'] = [s.signal_type.value for s in signals]
-            result_df['signal_type_name'] = [s.signal_type.name for s in signals]
-            result_df['signal_strength'] = [s.strength for s in signals]
-            result_df['signal_metadata'] = [s.metadata for s in signals]
-            result_df['z_score'] = [s.metadata.get('zscore', 0.0) for s in signals]
-            result_df['spread_val'] = [s.metadata.get('spread', 0.0) for s in signals]
-            result_df['estimate'] = [s.metadata.get('estimate', 0.0) for s in signals]
+            # 4. Finalisasi
+            result_df = pd.DataFrame(results)
+            
+            # Gabungkan dengan kolom asli yang tidak ada di hasil (opsional, agar data lengkap)
+            # Misalnya volume atau kolom tambahan lainnya dari backtest
+            for col in df.columns:
+                if col not in result_df.columns:
+                    result_df[col] = df[col].values
 
             duration = self.monitor.stop_timer("batch_processing")
             logger.info(f"Batch processing complete: {len(df)} rows, {duration:.2f}ms")
+            
             return Ok(result_df)
             
         except Exception as e:
@@ -637,80 +666,78 @@ class KalmanMeanReversion(BaseStrategy):
             return Err(f"Batch processing failed: {str(e)}")
 
     def evaluate_state(self, obs: Union[dict, MarketObservation]) -> Result[SignalEvent, str]:
-        """Live processing untuk real‑time tick."""
+        """
+        Live processing untuk real‑time tick (100% Agnostik).
         
-        # --- FIX: Deklarasikan di luar try-block agar linter tidak panik ---
+        Pintu masuk tunggal baik dari dict (API/WebSocket) maupun MarketObservation.
+        Fungsi ini mendelegasikan validasi harga dan kalkulasi spread ke _extract_spread.
+        """
         observation: Optional[MarketObservation] = None
         
         try:
+            # 1. Parsing Input ke MarketObservation
             if isinstance(obs, dict):
                 import time
+                # Gunakan timestamp dari data, jika tidak ada pakai waktu sekarang (ms)
                 ts = int(obs.get("timestamp", time.time() * 1000))
                 observation = MarketObservation(timestamp=ts, data=obs)
             else:
                 observation = obs
 
+            # Validasi dasar data
             if not observation.data:
-                return self._neutral_signal(observation.timestamp, "empty_data", "Observation data kosong")
-
-            # Deteksi Pair
-            p_target = observation.data.get("close_DOGE", observation.data.get("close"))
-            p_ref = observation.data.get("close_BTC")
-
-            if p_target is None or p_ref is None:
                 return self._neutral_signal(
-                    observation.timestamp,
-                    "missing_price",
-                    f"Missing price. Target: {p_target}, Ref: {p_ref}"
+                    observation.timestamp, 
+                    "empty_data", 
+                    "Observation data kosong"
                 )
 
-            try:
-                p_target_f = float(p_target)
-                p_ref_f = float(p_ref)
-            except (ValueError, TypeError):
+            # 2. Ekstraksi & Validasi Spread (Agnostik)
+            # Fungsi ini sudah mencakup: 
+            # - Mencari kolom 'close_XXX' secara otomatis
+            # - Konversi ke float
+            # - Cek np.isfinite
+            # - Cek harga <= 0 (untuk log spread)
+            spread_result = self._extract_spread(observation)
+            
+            if spread_result.is_err():
+                # Jika data tidak valid, kembalikan sinyal NEUTRAL dengan alasan errornya
                 return self._neutral_signal(
-                    observation.timestamp,
-                    "price_cast_error",
-                    f"Cannot cast to float: {p_target}, {p_ref}"
+                    observation.timestamp, 
+                    "extract_error", 
+                    str(spread_result.unwrap_err())
                 )
 
-            if not np.isfinite(p_target_f) or not np.isfinite(p_ref_f):
-                return self._neutral_signal(
-                    observation.timestamp,
-                    "non_finite_price",
-                    f"Non-finite price: {p_target_f}, {p_ref_f}"
-                )
+            spread = float(spread_result.unwrap())
 
-            if p_target_f <= 0 or p_ref_f <= 0:
-                return self._neutral_signal(
-                    observation.timestamp,
-                    "zero_negative_price",
-                    f"Zero/negative price: {p_target_f}, {p_ref_f}"
-                )
-
-            # --- CEK GAP WAKTU ---
+            # 3. Pengelolaan State Waktu (Gap Detection)
+            # Jika ada gap waktu terlalu besar, reset filter agar tidak menggunakan state usang
             if self._last_processed_timestamp > 0:
                 gap_ms = observation.timestamp - self._last_processed_timestamp
                 if gap_ms > self.MAX_GAP_MS:
-                    logger.warning(f"⚠️ Live gap {gap_ms/1000:.1f}s detected. Resetting filter.")
+                    logger.warning(
+                        f"⚠️ Live gap {gap_ms/1000:.1f}s detected untuk {observation.symbol}. "
+                        f"Resetting Kalman Filter."
+                    )
                     self.reset()
+            
+            # Update timestamp terakhir yang berhasil diproses
             self._last_processed_timestamp = observation.timestamp
 
-            # --- PROSES SPREAD ---
-            spread = self._calculate_spread(p_target_f, p_ref_f)
-            return self._process_observation(spread, observation.timestamp)
+            # 4. Eksekusi Strategi (Math Kernel)
+            # Melempar spread ke mesin utama untuk mendapatkan SignalEvent
+            return self._process_observation(
+                spread, 
+                observation.timestamp, 
+                observation.symbol
+            )
 
         except Exception as e:
+            # Proteksi terakhir jika terjadi crash tak terduga
             logger.error(f"Live evaluation crash: {e}", exc_info=True)
-            
-            # --- FIX: Ambil timestamp dengan aman jika observation sudah terisi ---
             err_ts = observation.timestamp if observation is not None else 0
-            
-            return self._neutral_signal(
-                err_ts,
-                "live_crash",
-                str(e)
-            )
+            return self._neutral_signal(err_ts, "live_crash", str(e))
+
 
     # ========== STRATEGY MANAGEMENT ==========
 

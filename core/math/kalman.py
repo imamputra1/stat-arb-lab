@@ -115,6 +115,7 @@ class AdaptiveKalmanFilter:
         
         # State matrices
         self.F = np.eye(config.state_dim, dtype=np.float64)
+        
         self.H = np.array([[1.0, 0.0]], dtype=np.float64)
         self.base_Q = np.eye(config.state_dim, dtype=np.float64) * config.Q
         self.R = np.array([[config.R]], dtype=np.float64)
@@ -124,6 +125,9 @@ class AdaptiveKalmanFilter:
         self.P = np.eye(config.state_dim, dtype=np.float64)
         
         # Cache untuk performance
+        self.K = np.zeros((config.state_dim, 1), dtype=np.float64)
+        self.last_innovation = 0.0
+        self.last_nis = 0.0
         self._H_T = self.H.T
         self._I = np.eye(config.state_dim, dtype=np.float64)
         
@@ -141,6 +145,8 @@ class AdaptiveKalmanFilter:
         Q_used: FloatMatrix
         y: Optional[FloatMatrix] = None  # Innovation
         S: Optional[FloatMatrix] = None  # Innovation Covariance
+        innovation: float = 0.0
+        nis: float = 0.0
 
     # =========================================================================
     # PUBLIC UPDATE METHOD
@@ -244,12 +250,13 @@ class AdaptiveKalmanFilter:
             
             # Cek Singularitas S
             det_S = np.linalg.det(S)
-            if np.abs(det_S) < 1e-15:
+            if np.abs(det_S) < 1e-12:
                 return Err(SingularMatrixError("S matrix is singular (non-invertible)"))
             
             # Update Context
             ctx.y = y
             ctx.S = S
+            ctx.innovation = float(y[0, 0])
             return Ok(ctx)
         except Exception as e:
             return Err(KalmanError(f"Innovation step failed: {str(e)}"))
@@ -267,9 +274,10 @@ class AdaptiveKalmanFilter:
             # 1. Hitung NIS: y.T * inv(S) * y
             inv_S = np.linalg.inv(ctx.S)
             nis = (ctx.y.T @ inv_S @ ctx.y)[0, 0]
+            ctx.nis = float(nis)
             
             # Threshold Statistical (Chi-square distribution).
-            SHOCK_THRESHOLD = 4.0 
+            SHOCK_THRESHOLD = self.config.shock_threshold
             
             # Jika terdeteksi Shock, lakukan 'Q-Boosting'
             if nis > SHOCK_THRESHOLD:
@@ -285,7 +293,7 @@ class AdaptiveKalmanFilter:
                 ctx.S = (self.H @ ctx.P_pred @ self.H.T) + self.R
                 
                 # Re-check singularity setelah update S
-                if np.abs(np.linalg.det(ctx.S)) < 1e-15:
+                if np.abs(np.linalg.det(ctx.S)) < 1e-12:
                      return Err(SingularMatrixError("S matrix became singular after Adaptive Q boost"))
 
             return Ok(ctx)
@@ -320,13 +328,20 @@ class AdaptiveKalmanFilter:
             # Baru di sini kita ubah state object (self)
             self.x = new_x
             self.P = new_P
-            
+
+            # Simpan K, innovation, dan nis ke instance variable
+            self.K = K.copy()
+            self.last_innovation = ctx.innovation
+            self.last_nis = ctx.nis
+
             # Return Immutable Snapshot
             return Ok(KalmanState(
                 x=new_x.copy(),
                 P=new_P.copy(),
                 K=K.copy(),
                 Q_adaptive=ctx.Q_used.copy(),
+                innovation=ctx.innovation,
+                nis=ctx.nis,
                 timestamp=dt.datetime.now(dt.timezone.utc)  # <-- 3. FIX DATETIME SESUAI FORMAT AWAL
             ))
             
@@ -344,10 +359,10 @@ class AdaptiveKalmanFilter:
             state = KalmanState(
                 x=self.x.copy(),
                 P=self.P.copy(),
-                K=np.zeros((2, 1)),  # Placeholder
+                K=self.K.copy(),  # Placeholder
                 Q_adaptive=self.base_Q.copy(),
-                innovation=0.0,
-                nis=0.0
+                innovation=self.last_innovation,
+                nis=self.last_nis
             )
             return Ok(state)
         except Exception as e:
@@ -485,9 +500,7 @@ class KalmanBatchProcessor:
         # --- FIX ERROR 2: Type Narrowing (Assertion) ---
         assert filter_instance is not None, "Filter instance cannot be None"
         # -----------------------------------------------
-        
-        states: list[KalmanState] = []
-        
+       
         if lambda_factors is None:
             lambda_factors = [1.0] * len(measurements)
         
@@ -496,7 +509,7 @@ class KalmanBatchProcessor:
             
             # Pattern matching untuk handle result
             def handle_success(state: KalmanState) -> KalmanState:
-                states.append(state)
+                self.states.append(state)
                 return state
             
             def handle_error(error: KalmanError) -> KalmanError:
@@ -508,9 +521,8 @@ class KalmanBatchProcessor:
             # Jika error, stop processing dan return partial results dengan error
             if result.is_err():
                 return Err(f"Batch processing failed at index {i}: {self.errors[-1][1]}")
-        
-        self.states.extend(states)
-        return Ok(states)
+
+        return Ok(self.states[-len(measurements):])
 
     def rollback(self, steps: int = 1) -> Result[None, str]:
         """Monadic rollback operation"""
@@ -633,6 +645,30 @@ def with_retry(
 # ============================================================================
 # ASYNC MONADIC OPERATIONS
 # ============================================================================
+@safe_async
+async def async_batch_process(
+    filter_instance: AdaptiveKalmanFilter,
+    measurements: list[float],
+    lambda_factors: Optional[list[float]] = None
+) -> Result[list[KalmanState], str]:
+    """
+    [RESTORED] Async wrapper untuk mengeksekusi KalmanBatchProcessor.
+    Mencegah blocking pada event loop utama saat melakukan batch research/backtest.
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    
+    def sync_task() -> Result[list[KalmanState], str]:
+        # Buat instance processor dan masukkan filter_instance ke dalamnya
+        processor = KalmanBatchProcessor(Ok(filter_instance))
+        return processor.process_batch(measurements, lambda_factors)
+
+    # Eksekusi fungsi berat secara paralel di ThreadPool agar tidak nge-block
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        result = await loop.run_in_executor(pool, sync_task)
+        return result
+
 @safe_async
 async def async_kalman_update(
     filter_instance: AdaptiveKalmanFilter,

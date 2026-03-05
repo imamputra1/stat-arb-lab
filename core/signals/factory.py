@@ -336,31 +336,6 @@ StrategyRegistry.register(
 )
 print("[SYSTEM] ✅ Strategy Registration Complete.\n")
 
-# ====================== CONFIG PARSER ======================
-
-class ConfigParser:
-    @staticmethod
-    def parse_signal_config(raw): return SignalConfig.from_dict(raw)
-
-    @staticmethod
-    def parse_kalman_config(raw):
-        try:
-            mode = raw.get('adaptation_mode', 'nis')
-            if isinstance(mode, str): mode = AdaptationMode(mode.lower())
-            
-            return Ok(KalmanConfig(
-                R=float(raw['R']), 
-                Q=float(raw['Q']),
-                initial_value=float(raw.get('initial_value', 0.0)),
-                adaptation_mode=mode,
-                state_dim=int(raw.get('state_dim', 2))
-            ))
-        except Exception as e: return Err(str(e))
-        
-    @staticmethod
-    def parse_generic_config(raw, typ): return Ok(None) 
-
-
 # ====================== ASSEMBLY FACTORY ======================
 
 class SignalFactory:

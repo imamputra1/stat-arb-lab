@@ -4,7 +4,7 @@ Signal Types and Events - Protocol definitions for ORCA trading system
 
 from enum import Enum
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, TypeVar, Callable # Tambahkan Type, TypeVar
+from typing import Dict, Any, List, TypeVar, Callable, Mapping # Tambahkan Type, TypeVar
 import pandas as pd
 import time
 import json
@@ -164,7 +164,7 @@ class SignalEvent:
             object.__setattr__(self, 'timestamp', int(time.time() * 1000)) # Auto-repair timestamp
             
     @property
-    def metadata(self) -> MappingProxyType:
+    def metadata(self) -> Mapping[str, Any]:
         """Expose metadata as read-only proxy"""
         return MappingProxyType(self._metadata)
 
@@ -379,7 +379,7 @@ class SignalConfig:
     
     # --- LOGIC PARAMETERS (The Trigger) ---
     entry_z_score: float = 2.0    # Masuk saat deviasi tinggi
-    exit_z_score: float = 0.0     # Keluar saat kembali ke mean
+    exit_z_score: float = 0.5     # Keluar saat kembali ke mean
     stop_loss_z: float = 4.0      # Emergency break
     
     # --- RISK & SIZING ---
@@ -388,7 +388,8 @@ class SignalConfig:
     
     # --- CALCULATION WINDOW ---
     # [CRITICAL] Parameter ini yang menghapus hardcode '50' di strategi
-    volatility_window: int = 50   
+    volatility_window: int = 50
+    warmup_ticks: int = 100
     
     # --- META ---
     version: str = "1.0.0"
@@ -409,6 +410,7 @@ class SignalConfig:
                 max_position=float(config.get("max_position", 1.0)),
                 hedge_ratio=float(config.get("hedge_ratio", 1.0)),
                 volatility_window=int(config.get("volatility_window", 50)),
+                warmup_ticks=int(config.get("warmup_ticks", 100)),
                 version=str(config.get("version", "1.0.0"))
             )
             

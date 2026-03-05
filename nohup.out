@@ -1,0 +1,136 @@
+[I 2026-03-03 13:19:20.351 ServerApp] jupyter_lsp | extension was successfully linked.
+[I 2026-03-03 13:19:20.357 ServerApp] jupyter_server_terminals | extension was successfully linked.
+[I 2026-03-03 13:19:20.362 ServerApp] jupyterlab | extension was successfully linked.
+[I 2026-03-03 13:19:20.809 ServerApp] notebook_shim | extension was successfully linked.
+[I 2026-03-03 13:19:20.835 ServerApp] notebook_shim | extension was successfully loaded.
+[I 2026-03-03 13:19:20.837 ServerApp] jupyter_lsp | extension was successfully loaded.
+[I 2026-03-03 13:19:20.838 ServerApp] jupyter_server_terminals | extension was successfully loaded.
+[I 2026-03-03 13:19:20.845 LabApp] JupyterLab extension loaded from /home/bumip/orca/.venv/lib/python3.11/site-packages/jupyterlab
+[I 2026-03-03 13:19:20.845 LabApp] JupyterLab application directory is /home/bumip/orca/.venv/share/jupyter/lab
+[I 2026-03-03 13:19:20.845 LabApp] Extension Manager is 'pypi'.
+[I 2026-03-03 13:19:20.961 ServerApp] jupyterlab | extension was successfully loaded.
+[I 2026-03-03 13:19:20.962 ServerApp] Serving notebooks from local directory: /home/bumip/orca
+[I 2026-03-03 13:19:20.962 ServerApp] Jupyter Server 2.17.0 is running at:
+[I 2026-03-03 13:19:20.962 ServerApp] http://localhost:8888/lab?token=d3fc4970ad575fa99d9df709518109480e32bd2b196fb44b
+[I 2026-03-03 13:19:20.962 ServerApp]     http://127.0.0.1:8888/lab?token=d3fc4970ad575fa99d9df709518109480e32bd2b196fb44b
+[I 2026-03-03 13:19:20.962 ServerApp] Use Control-C to stop this server and shut down all kernels (twice to skip confirmation).
+[C 2026-03-03 13:19:20.965 ServerApp] 
+    
+    To access the server, open this file in a browser:
+        file:///home/bumip/.local/share/jupyter/runtime/jpserver-70462-open.html
+    Or copy and paste one of these URLs:
+        http://localhost:8888/lab?token=d3fc4970ad575fa99d9df709518109480e32bd2b196fb44b
+        http://127.0.0.1:8888/lab?token=d3fc4970ad575fa99d9df709518109480e32bd2b196fb44b
+[I 2026-03-03 13:19:21.166 ServerApp] Skipped non-installed server(s): basedpyright, bash-language-server, dockerfile-language-server-nodejs, javascript-typescript-langserver, jedi-language-server, julia-language-server, pyrefly, pyright, python-language-server, python-lsp-server, r-languageserver, sql-language-server, texlab, typescript-language-server, unified-language-server, vscode-css-languageserver-bin, vscode-html-languageserver-bin, vscode-json-languageserver-bin, yaml-language-server
+[W 2026-03-03 13:19:21.642 ServerApp] 404 GET /api/kernels/701c65d3-d9da-451a-9314-a6f2ad436076?1772518761608 (127.0.0.1): Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076
+[W 2026-03-03 13:19:21.643 ServerApp] wrote error: 'Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076'
+    Traceback (most recent call last):
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/tornado/web.py", line 1859, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/services/kernels/handlers.py", line 75, in get
+        model = await ensure_async(km.kernel_model(kernel_id))
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/services/kernels/kernelmanager.py", line 513, in kernel_model
+        self._check_kernel_id(kernel_id)
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/services/kernels/kernelmanager.py", line 544, in _check_kernel_id
+        raise web.HTTPError(404, "Kernel does not exist: %s" % kernel_id)
+    tornado.web.HTTPError: HTTP 404: Not Found (Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076)
+[W 2026-03-03 13:19:21.646 ServerApp] 404 GET /api/kernels/701c65d3-d9da-451a-9314-a6f2ad436076?1772518761608 (06b23f6d25874086aaa0801fb4eaabe4@127.0.0.1) 4.93ms referer=http://localhost:8888/lab/tree/research/notebook/quick_validation.ipynb
+[W 2026-03-03 13:19:22.626 ServerApp] 404 GET /api/kernels/701c65d3-d9da-451a-9314-a6f2ad436076/channels?session_id=a4fdcff1-312c-4bfa-adeb-f6b313ab06e7 (127.0.0.1): Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076
+[W 2026-03-03 13:19:22.647 ServerApp] 404 GET /api/kernels/701c65d3-d9da-451a-9314-a6f2ad436076/channels?session_id=a4fdcff1-312c-4bfa-adeb-f6b313ab06e7 (06b23f6d25874086aaa0801fb4eaabe4@127.0.0.1) 22.17ms referer=None
+[W 2026-03-03 13:19:22.656 ServerApp] 404 GET /api/kernels/701c65d3-d9da-451a-9314-a6f2ad436076?1772518762651 (127.0.0.1): Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076
+[W 2026-03-03 13:19:22.656 ServerApp] wrote error: 'Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076'
+    Traceback (most recent call last):
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/tornado/web.py", line 1859, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/services/kernels/handlers.py", line 75, in get
+        model = await ensure_async(km.kernel_model(kernel_id))
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/services/kernels/kernelmanager.py", line 513, in kernel_model
+        self._check_kernel_id(kernel_id)
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/services/kernels/kernelmanager.py", line 544, in _check_kernel_id
+        raise web.HTTPError(404, "Kernel does not exist: %s" % kernel_id)
+    tornado.web.HTTPError: HTTP 404: Not Found (Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076)
+[W 2026-03-03 13:19:22.657 ServerApp] 404 GET /api/kernels/701c65d3-d9da-451a-9314-a6f2ad436076?1772518762651 (06b23f6d25874086aaa0801fb4eaabe4@127.0.0.1) 1.92ms referer=http://localhost:8888/lab/tree/research/notebook/quick_validation.ipynb
+[W 2026-03-03 13:19:24.664 ServerApp] 404 GET /api/kernels/701c65d3-d9da-451a-9314-a6f2ad436076/channels?session_id=a4fdcff1-312c-4bfa-adeb-f6b313ab06e7 (127.0.0.1): Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076
+[W 2026-03-03 13:19:24.665 ServerApp] 404 GET /api/kernels/701c65d3-d9da-451a-9314-a6f2ad436076/channels?session_id=a4fdcff1-312c-4bfa-adeb-f6b313ab06e7 (06b23f6d25874086aaa0801fb4eaabe4@127.0.0.1) 2.36ms referer=None
+[W 2026-03-03 13:19:24.699 ServerApp] 404 GET /api/kernels/701c65d3-d9da-451a-9314-a6f2ad436076?1772518764668 (127.0.0.1): Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076
+[W 2026-03-03 13:19:24.699 ServerApp] wrote error: 'Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076'
+    Traceback (most recent call last):
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/tornado/web.py", line 1859, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/services/kernels/handlers.py", line 75, in get
+        model = await ensure_async(km.kernel_model(kernel_id))
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/services/kernels/kernelmanager.py", line 513, in kernel_model
+        self._check_kernel_id(kernel_id)
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/services/kernels/kernelmanager.py", line 544, in _check_kernel_id
+        raise web.HTTPError(404, "Kernel does not exist: %s" % kernel_id)
+    tornado.web.HTTPError: HTTP 404: Not Found (Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076)
+[W 2026-03-03 13:19:24.700 ServerApp] 404 GET /api/kernels/701c65d3-d9da-451a-9314-a6f2ad436076?1772518764668 (06b23f6d25874086aaa0801fb4eaabe4@127.0.0.1) 2.02ms referer=http://localhost:8888/lab/tree/research/notebook/quick_validation.ipynb
+[W 2026-03-03 13:19:29.683 ServerApp] 404 GET /api/kernels/701c65d3-d9da-451a-9314-a6f2ad436076/channels?session_id=a4fdcff1-312c-4bfa-adeb-f6b313ab06e7 (127.0.0.1): Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076
+[W 2026-03-03 13:19:29.684 ServerApp] 404 GET /api/kernels/701c65d3-d9da-451a-9314-a6f2ad436076/channels?session_id=a4fdcff1-312c-4bfa-adeb-f6b313ab06e7 (06b23f6d25874086aaa0801fb4eaabe4@127.0.0.1) 1.47ms referer=None
+[W 2026-03-03 13:19:29.693 ServerApp] 404 GET /api/kernels/701c65d3-d9da-451a-9314-a6f2ad436076?1772518769687 (127.0.0.1): Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076
+[W 2026-03-03 13:19:29.693 ServerApp] wrote error: 'Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076'
+    Traceback (most recent call last):
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/tornado/web.py", line 1859, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/services/kernels/handlers.py", line 75, in get
+        model = await ensure_async(km.kernel_model(kernel_id))
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/services/kernels/kernelmanager.py", line 513, in kernel_model
+        self._check_kernel_id(kernel_id)
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/services/kernels/kernelmanager.py", line 544, in _check_kernel_id
+        raise web.HTTPError(404, "Kernel does not exist: %s" % kernel_id)
+    tornado.web.HTTPError: HTTP 404: Not Found (Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076)
+[W 2026-03-03 13:19:29.694 ServerApp] 404 GET /api/kernels/701c65d3-d9da-451a-9314-a6f2ad436076?1772518769687 (06b23f6d25874086aaa0801fb4eaabe4@127.0.0.1) 2.14ms referer=http://localhost:8888/lab/tree/research/notebook/quick_validation.ipynb
+[W 2026-03-03 13:19:41.645 ServerApp] 404 GET /api/kernels/701c65d3-d9da-451a-9314-a6f2ad436076/channels?session_id=a4fdcff1-312c-4bfa-adeb-f6b313ab06e7 (127.0.0.1): Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076
+[W 2026-03-03 13:19:41.646 ServerApp] 404 GET /api/kernels/701c65d3-d9da-451a-9314-a6f2ad436076/channels?session_id=a4fdcff1-312c-4bfa-adeb-f6b313ab06e7 (06b23f6d25874086aaa0801fb4eaabe4@127.0.0.1) 1.94ms referer=None
+[W 2026-03-03 13:19:41.656 ServerApp] 404 GET /api/kernels/701c65d3-d9da-451a-9314-a6f2ad436076?1772518781649 (127.0.0.1): Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076
+[W 2026-03-03 13:19:41.656 ServerApp] wrote error: 'Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076'
+    Traceback (most recent call last):
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/tornado/web.py", line 1859, in _execute
+        result = await result
+                 ^^^^^^^^^^^^
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/auth/decorator.py", line 73, in inner
+        return await out
+               ^^^^^^^^^
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/services/kernels/handlers.py", line 75, in get
+        model = await ensure_async(km.kernel_model(kernel_id))
+                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/services/kernels/kernelmanager.py", line 513, in kernel_model
+        self._check_kernel_id(kernel_id)
+      File "/home/bumip/orca/.venv/lib/python3.11/site-packages/jupyter_server/services/kernels/kernelmanager.py", line 544, in _check_kernel_id
+        raise web.HTTPError(404, "Kernel does not exist: %s" % kernel_id)
+    tornado.web.HTTPError: HTTP 404: Not Found (Kernel does not exist: 701c65d3-d9da-451a-9314-a6f2ad436076)
+[W 2026-03-03 13:19:41.658 ServerApp] 404 GET /api/kernels/701c65d3-d9da-451a-9314-a6f2ad436076?1772518781649 (06b23f6d25874086aaa0801fb4eaabe4@127.0.0.1) 2.86ms referer=http://localhost:8888/lab/tree/research/notebook/quick_validation.ipynb
+[I 2026-03-03 13:30:45.233 LabApp] Build is up to date
+[I 2026-03-03 13:30:53.047 ServerApp] Kernel started: d11bf344-e8bf-4796-8d26-144f44c6b55c
+[I 2026-03-03 13:30:53.436 ServerApp] Adapting from protocol version 5.3 (kernel d11bf344-e8bf-4796-8d26-144f44c6b55c) to 5.4 (client).
+[I 2026-03-03 13:30:53.437 ServerApp] Connecting to kernel d11bf344-e8bf-4796-8d26-144f44c6b55c.
+[W 2026-03-03 13:30:53.438 ServerApp] The websocket_ping_timeout (90000) cannot be longer than the websocket_ping_interval (30000).
+    Setting websocket_ping_timeout=30000
+[I 2026-03-03 13:30:53.441 ServerApp] Adapting from protocol version 5.3 (kernel d11bf344-e8bf-4796-8d26-144f44c6b55c) to 5.4 (client).
+[I 2026-03-03 13:30:53.441 ServerApp] Connecting to kernel d11bf344-e8bf-4796-8d26-144f44c6b55c.
+[I 2026-03-03 13:30:53.444 ServerApp] Adapting from protocol version 5.3 (kernel d11bf344-e8bf-4796-8d26-144f44c6b55c) to 5.4 (client).
+[I 2026-03-03 13:30:53.445 ServerApp] Connecting to kernel d11bf344-e8bf-4796-8d26-144f44c6b55c.
+[I 2026-03-03 13:34:52.382 ServerApp] Saving file at /research/notebook/quick_validation.ipynb
+[I 2026-03-03 13:38:52.472 ServerApp] Saving file at /research/notebook/quick_validation.ipynb
+[I 2026-03-03 13:39:16.490 ServerApp] Starting buffering for d11bf344-e8bf-4796-8d26-144f44c6b55c:3d63af04-19f0-474d-9e25-0af225e064ad
+[IPKernelApp] WARNING | Parent appears to have exited, shutting down.
