@@ -28,6 +28,8 @@ from .factory import (
 # 3. Facade (THE MISSING PIECE)
 from .facade import SignalGeneratorFacade
 
+# 4. Strategies
+from .strategies import KalmanMeanReversion, KalmanState
 # 4. Public Export List
 __all__ = [
     # Base
@@ -52,5 +54,9 @@ __all__ = [
     'get_factory',
 
     # Facade
-    'SignalGeneratorFacade'
+    'SignalGeneratorFacade',
+
+    # Strategies
+    'KalmanMeanReversion',
+    'KalmanState'
 ]

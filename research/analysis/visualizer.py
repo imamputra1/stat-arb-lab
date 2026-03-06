@@ -11,12 +11,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
 
+from core.shared import Ok, Err, Result
+
 # --- PATH INJECTION ---
 PROJECT_ROOT = Path(__file__).parent.parent.parent.absolute()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from core.shared import Ok, Err, Result
 
 # --- STYLING ---
 plt.style.use('dark_background')

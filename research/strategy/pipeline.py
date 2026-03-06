@@ -1,7 +1,10 @@
 """
 QUANTUM STRATEGY PIPELINE (THE BLIND COMMANDER) - V10.0 KALMAN INTEGRATION
 Location: research/strategy/pipeline.py
-Focus: Pure orchestration with KalmanMeanReversion strategy.
+Focus: 
+  1. In‑memory execution for optimization (zero disk I/O).
+  2. Full orchestrator for backtesting with risk & execution simulation.
+  3. Strict alignment with SignalConfig & KalmanConfig vocabulary.
 """
 
 import sys
@@ -16,27 +19,20 @@ from enum import Enum, auto
 import polars as pl
 import pandas as pd
 
+# --- Import privet module ---
+from core.shared import Ok, Err, Result
+from research.ingestion import create_silver_loader
+from core.signals import KalmanMeanReversion, SignalConfig
+from core.math import KalmanConfig, AdaptationMode
+from core.risk.manager import RiskManager
+from core.execution import ExecutionSimulator
+from research.analysis
 warnings.filterwarnings('ignore')
 
 # --- PATH CONFIGURATION ---
 PROJECT_ROOT = Path(__file__).parent.parent.parent.absolute()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
-
-# --- CORE IMPORTS ---
-from core.shared import Ok, Err, Result
-from research.ingestion.loader import create_silver_loader
-
-# Import Kalman strategy directly
-from core.signals.strategies.kalman_mr import KalmanMeanReversion
-from core.signals.types import SignalConfig
-from core.math import KalmanConfig, AdaptationMode
-from core.risk.manager import RiskManager
-from core.execution.simulator import ExecutionSimulator
-from research.analysis.pipeline import PipelineAnalytics
-
-# Fallback/Mock Imports for Safety
-
 
 # --- ENUMERATIONS ---
 class PipelinePhase(Enum):

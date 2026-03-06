@@ -40,6 +40,8 @@ from .exceptions import (
     OrderNotFoundError,
     RateLimitError
 )
+# 5. Simulator
+from .simulator import ExecutionSimulator
 
 # 5. OMS (State Manager) - Kita akan buat ini setelah Mechanics
 # from .oms import OrderManagementSystem
@@ -60,5 +62,8 @@ __all__ = [
     # Config & Exceptions
     'ExecutionConfig',
     'ExecutionError', 'InsufficientFundsError', 
-    'OrderNotFoundError', 'RateLimitError'
+    'OrderNotFoundError', 'RateLimitError',
+
+    # Simulator
+    'ExecutionSimulator'
 ]
