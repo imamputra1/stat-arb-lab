@@ -1,31 +1,20 @@
 """
-STRATEGY MODULE (THE COMMAND CENTER) - V1.0
+STRATEGY MODULE (THE COMMAND CENTER) - V1.1
 Location: research/strategy/__init__.py
 Exports:
-    - Data preparation pipeline (load, align, compute spread)
+    - Data preparation pipeline (prepare_combat_data)
     - In-memory Kalman executor
-    - Legacy compatibility class
 """
 
 # Data preparation pipeline
-from .pipeline import (
-    load_silver_data,
-    align_and_sanitize,
-    calculate_raw_spread,
-    prepare_combat_data,
-    AdvancedStrategyPipeline,
-)
+from .pipeline import prepare_combat_data
 
 # Kalman in-memory executor
 from .executor import run_kalman_backtest
 
 __all__ = [
     # Pipeline
-    "load_silver_data",
-    "align_and_sanitize",
-    "calculate_raw_spread",
     "prepare_combat_data",
-    "AdvancedStrategyPipeline",
     # Executor
     "run_kalman_backtest",
 ]
