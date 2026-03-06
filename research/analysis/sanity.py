@@ -1,94 +1,159 @@
 """
-SANITY CHECKER (THE DOCTOR) - DYNAMIC V4.2
+SYSTEM DOCTOR (THE SANITY CHECKER) - V1.0
 Location: research/analysis/sanity.py
-Focus: Context-aware system validation.
-Standard: Synchronized with Pipeline Metadata & CLI.
+Focus: Validate system structure and configuration integrity.
+       Ensures all required directories exist and configuration logic is sound.
 """
+
 import sys
 import json
 import logging
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 
 # --- PATH INJECTION ---
 PROJECT_ROOT = Path(__file__).parent.parent.parent.absolute()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# --- CORE SHARED ---
+from core.shared import Result, Ok
 
-logger = logging.getLogger("Doctor")
-logger.setLevel(logging.INFO)
+
+# ============================================================================
+# LOGGING SETUP
+# ============================================================================
+
+def _setup_logger() -> logging.Logger:
+    """Create a dedicated logger for doctor with clean output."""
+    logger = logging.getLogger("SystemDoctor")
+    logger.setLevel(logging.INFO)
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter('%(message)s')
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    logger.propagate = False
+    return logger
+
+
+# ============================================================================
+# MAIN DOCTOR CLASS
+# ============================================================================
 
 class SystemDoctor:
-    def __init__(self, project_root: Path = PROJECT_ROOT):
-        self.project_root = project_root
-        # Metadata sensor
-        self.results_dir = project_root / "research" / "results"
-        self.diagnosis = {}
+    """
+    Performs system‑level sanity checks:
+      - Checks existence of critical directories.
+      - Validates configuration logic (entry > exit, etc.) using latest metadata.
+    """
 
-    def _get_latest_config(self) -> Dict[str, Any]:
-        """Membaca parameter terakhir yang digunakan pipeline."""
+    def __init__(self, project_root: Optional[Path] = None) -> None:
+        """
+        Initialize doctor with project root directory.
+        
+        Args:
+            project_root: Path to project root. Defaults to auto‑detected.
+        """
+        self.project_root = project_root or PROJECT_ROOT
+        self.results_dir = self.project_root / "research" / "results"
+        self.logger = _setup_logger()
+        self.diagnosis: Dict[str, Any] = {}
+
+    def _get_latest_metadata(self) -> Dict[str, Any]:
+        """
+        Find the most recent metadata_*.json file in results directory.
+        Returns empty dict if none found.
+        """
         meta_files = list(self.results_dir.glob("metadata_*.json"))
         if not meta_files:
             return {}
-        latest_meta = max(meta_files, key=lambda f: f.stat().st_mtime)
+        latest = max(meta_files, key=lambda f: f.stat().st_mtime)
         try:
-            with open(latest_meta, 'r') as f:
+            with open(latest, 'r') as f:
                 return json.load(f)
-        except:
+        except Exception:
             return {}
 
-    def full_checkup(self):
-        logger.info("\n" + "="*70)
-        logger.info("🔬 DYNAMIC SYSTEM SANITY CHECK")
-        logger.info("="*70)
+    def full_checkup(self) -> Result[Dict[str, Any], str]:
+        """
+        Run all checks and return diagnosis.
+        Prints a formatted report to console.
+        """
+        self.logger.info("\n" + "=" * 70)
+        self.logger.info("🔬 SYSTEM SANITY CHECK")
+        self.logger.info("=" * 70)
 
-        # 1. Load context
-        config = self._get_latest_config()
-        entry_t = config.get("entry_threshold", 2.0)
-        exit_t = config.get("exit_threshold", 0.5)
+        # 1. Structural check
+        structure_ok = self._check_structure()
+        self.diagnosis["structure"] = "HEALTHY" if structure_ok else "DEFECTIVE"
 
-        # 2. Structural Check
-        self._check_structure()
+        # 2. Load latest configuration
+        config = self._get_latest_metadata()
+        if config:
+            entry_t = config.get("entry_threshold", 2.0)
+            exit_t = config.get("exit_threshold", 0.5)
+            self.logger.info(f"\n📋 Latest config: Entry={entry_t}, Exit={exit_t}")
+            logic_ok = self._check_logic(entry_t, exit_t)
+            self.diagnosis["logic"] = "SOUND" if logic_ok else "CORRUPT"
+            self.diagnosis["config"] = config
+        else:
+            self.logger.info("\n⚠️  No metadata found – skipping logic check.")
+            self.diagnosis["logic"] = "UNKNOWN"
 
-        # 3. Dynamic Logic Check
-        self._check_logic(entry_t, exit_t)
+        self.logger.info("\n" + "=" * 70 + "\n")
+        return Ok(self.diagnosis)
 
-        return self.diagnosis
-
-    def _check_structure(self):
-        """Memastikan folder inti ada."""
-        paths = [
-            "research/strategy/engine", 
-            "research/strategy/models/library", 
+    def _check_structure(self) -> bool:
+        """
+        Verify that critical directories exist.
+        Returns True if all are present.
+        """
+        required_paths = [
+            "research/strategy/engine",
+            "research/strategy/models/library",
             "data/silver",
-            #"research/strategy/optimization",
-            #"research/strategy/signals",
-            #"research/analytics"
         ]
-        missing = [p for p in paths if not (self.project_root / p).exists()]
-        
+        missing: List[str] = []
+        for rel_path in required_paths:
+            full_path = self.project_root / rel_path
+            if not full_path.exists():
+                missing.append(rel_path)
+
         if missing:
-            logger.error(f"   ❌ Missing: {missing}")
-            self.diagnosis["structure"] = "DEFECTIVE"
+            self.logger.error(f"   ❌ Missing directories: {missing}")
+            return False
         else:
-            logger.info("   ✅ Structure: HEALTHY")
-            self.diagnosis["structure"] = "HEALTHY"
+            self.logger.info("   ✅ All critical directories exist.")
+            return True
 
-    def _check_logic(self, entry: float, exit_t: float):
-        """Validasi logika berdasarkan parameter dinamis."""
-        logger.info(f"\n🧠 LOGIC BIOPSY (Context: Entry={entry}, Exit={exit_t})")
-        
+    def _check_logic(self, entry: float, exit_t: float) -> bool:
+        """
+        Validate that entry threshold is greater than exit threshold,
+        and both are positive (entry absolute value).
+        """
+        # Entry threshold is typically positive for absolute Z‑score.
+        # We compare the numeric values: entry should be > exit.
         if entry <= exit_t:
-            logger.error(f"   ❌ INVALID: Entry ({entry}) must be > Exit ({exit_t})")
-            self.diagnosis["logic"] = "CORRUPT"
-        elif exit_t <= 0:
-            logger.error(f"   ❌ INVALID: Exit ({exit_t}) must be positive")
-            self.diagnosis["logic"] = "CORRUPT"
-        else:
-            logger.info("   ✅ Logic: SOUND")
-            self.diagnosis["logic"] = "SOUND"
+            self.logger.error(f"   ❌ INVALID: Entry ({entry}) must be > Exit ({exit_t})")
+            return False
+        if exit_t <= 0:
+            self.logger.error(f"   ❌ INVALID: Exit ({exit_t}) must be positive")
+            return False
+        self.logger.info("   ✅ Logic: SOUND (entry > exit > 0)")
+        return True
 
-if __name__ == "__main__":
+
+# ============================================================================
+# QUICK ACCESS FUNCTION
+# ============================================================================
+
+def quick_checkup() -> Result[Dict[str, Any], str]:
+    """One‑shot system check without instantiating the class."""
     doctor = SystemDoctor()
-    doctor.full_checkup()
+    return doctor.full_checkup()
+
+
+# ============================================================================
+# END
+# ============================================================================

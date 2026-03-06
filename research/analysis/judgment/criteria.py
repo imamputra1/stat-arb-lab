@@ -1,22 +1,23 @@
-# research/analysis/pipeline/judgment/criteria.py
 """
-JUDGMENT CRITERIA (THE RULES OF WAR) - V1.1
-Location: research/analysis/pipeline/judgment/criteria.py
+JUDGMENT CRITERIA (THE RULES OF WAR) - V1.0
+Location: research/analysis/judgment/criteria.py
 Focus: Define evaluation criteria for backtest results.
 Each criterion evaluates a PerformanceMetrics object and returns a CriterionResult.
 """
 
-from typing import Protocol, Dict, Any, List, Union, Optional
-from dataclasses import dataclass
+from typing import Dict, Any, List, Union, Protocol
+from dataclasses import dataclass, field
 from enum import Enum
 
-# Impor dari core dan pipeline (asumsi sudah ada)
+# Import from pipeline (will be available)
+from research.analysis.models import PerformanceMetrics
+
+# Core shared
 from core.shared import Result, Ok, Err
-from research.analysis.pipeline import PerformanceMetrics  # akan diimpor
 
 
 # ============================================================================
-# ENUMS & DATA CLASSES
+# ENUMS & DATA CLASSES (THE BLUEPRINTS)
 # ============================================================================
 
 class CriterionSeverity(Enum):
@@ -38,7 +39,7 @@ class CriterionResult:
     passed: bool
     message: str
     severity: CriterionSeverity = CriterionSeverity.CRITICAL
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 # ============================================================================
@@ -274,15 +275,15 @@ class CompositeCriterion:
             return Err("Metrics object is None")
 
         results: List[CriterionResult] = []
-        for crit in self.criteria:
+        for idx, crit in enumerate(self.criteria):
             res = crit.evaluate(metrics)
             if res.is_err():
-                return Err(f"Sub-criterion evaluation failed: {res.unwrap_err()}")
-            # Safe unwrap: we know it's Ok
-            criterion_result = res.unwrap()
-            # Type guard to satisfy linter
-            assert criterion_result is not None, "CriterionResult must not be None"
-            results.append(criterion_result)
+                return Err(f"Sub-criterion {idx} evaluation failed: {res.unwrap_err()}")
+            result = res.unwrap()
+            # Guard against None
+            if result is None:
+                return Err(f"Sub-criterion {idx} returned None")
+            results.append(result)
 
         # Determine overall passed (all must pass)
         overall_passed = all(r.passed for r in results)
@@ -292,7 +293,6 @@ class CompositeCriterion:
             highest_severity = CriterionSeverity.INFO
         else:
             failed_severities = [r.severity for r in results if not r.passed]
-            # Severity order: CRITICAL > WARNING > INFO
             if any(s == CriterionSeverity.CRITICAL for s in failed_severities):
                 highest_severity = CriterionSeverity.CRITICAL
             elif any(s == CriterionSeverity.WARNING for s in failed_severities):
@@ -302,14 +302,14 @@ class CompositeCriterion:
 
         # Build combined message
         lines = [f"Composite '{self.name}' evaluation:"]
-        for idx, res in enumerate(results):
+        for i, res in enumerate(results):
             status = "✅" if res.passed else "❌"
             lines.append(f"  {status} {res.message}")
         message = "\n".join(lines)
 
         # Collect metadata from all
-        metadata = {
-            f"criterion_{idx}": res.metadata for idx, res in enumerate(results)
+        metadata: Dict[str, Any] = {
+            f"criterion_{i}": res.metadata for i, res in enumerate(results)
         }
 
         return Ok(CriterionResult(
@@ -370,3 +370,22 @@ def create_exploratory_criteria() -> CompositeCriterion:
         ],
         name="Exploratory"
     )
+
+
+# ============================================================================
+# QUICK ACCESS
+# ============================================================================
+
+def get_criteria_by_name(name: str) -> Result[CompositeCriterion, str]:
+    """
+    Get a predefined criteria set by name.
+    Names: 'default', 'conservative', 'exploratory'
+    """
+    criteria_map = {
+        "default": create_default_acceptance_criteria,
+        "conservative": create_conservative_criteria,
+        "exploratory": create_exploratory_criteria,
+    }
+    if name not in criteria_map:
+        return Err(f"Unknown criteria name: {name}. Available: {list(criteria_map.keys())}")
+    return Ok(criteria_map[name]())

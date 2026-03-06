@@ -1,20 +1,18 @@
 """
-PIPELINE ANALYTICS (THE DIAGNOSTIC CENTER) - V1.0 INDUSTRIAL GRADE
+PIPELINE ANALYTICS (THE ORCHESTRATOR) - V3.0 INDUSTRIAL GRADE
 Location: research/analysis/pipeline.py
-Focus: 
-  - Comprehensive performance metrics for backtest results.
-  - Visual accessibility with high‑contrast plots.
-  - Result‑oriented design with strict validation.
-  - Zero tolerance for silent failures.
+Focus: Pure orchestration of performance metrics, visualization, and reporting.
+Zero tolerance for silent failures. Strict type discipline.
 """
 
 import sys
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple, Union
+from typing import Dict, Any, Optional, Tuple, Union, List
 from dataclasses import dataclass, field
 from enum import Enum, auto
 import logging
 import warnings
+import json
 
 import numpy as np
 import pandas as pd
@@ -23,7 +21,11 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.figure import Figure
 
+from research.analysis.judgment.verdict import StrategyJudge, Judgment
+from research.analysis.judgment.criteria import CompositeCriterion, create_default_acceptance_criteria
+from research.analysis.models import PerformanceMetrics
 # --- CORE SHARED ---
+# Asumsikan core.shared sudah ada dengan Result, Ok, Err
 from core.shared import Result, Ok, Err
 
 # --- PATH BOOTSTRAP ---
@@ -43,13 +45,7 @@ class AnalyticsPhase(Enum):
     REPORTING = auto()
     COMPLETED = auto()
     FAILED = auto()
-
-
-class RiskFreeRate(Enum):
-    """Standard risk‑free rate assumptions."""
-    ZERO = 0.0
-    US_TBILL_3M = 0.05  # 5% annualized, example
-    CUSTOM = auto()
+    JUDGMENT = auto()
 
 
 @dataclass(frozen=True)
@@ -127,13 +123,15 @@ class AnalyticsConfig:
     Allows customization of risk‑free rate, plot style, etc.
     """
     risk_free_rate: float = 0.0
-    annualization_factor: int = 252  # trading days per year
+    annualization_factor: int = 365  # trading days per year
     value_at_risk_confidence: float = 0.95
     figsize: Tuple[int, int] = (15, 10)
     plot_style: str = "seaborn-v0_8-darkgrid"
     save_plots: bool = False
     plot_output_dir: Optional[Path] = None
     verbose: bool = True
+    judgment_criteria: Optional[CompositeCriterion] = None
+    judge_name: str = "PipelineJudge"
 
 
 # ============================================================================
@@ -149,12 +147,12 @@ def calculate_returns_series(
     Expects price series to be sorted ascending by time.
     """
     # Guard clauses
-    if price_series is None or price_series.empty:
-        return Err("Price series is empty or None")
+    if price_series is None:
+        return Err("Price series is None")
     if not isinstance(price_series, pd.Series):
         return Err(f"Expected pd.Series, got {type(price_series)}")
-
-    # Ensure no NaN in price
+    if price_series.empty:
+        return Err("Price series is empty")
     if price_series.isnull().any():
         return Err("Price series contains NaN values")
 
@@ -162,14 +160,13 @@ def calculate_returns_series(
     returns = price_series.pct_change().dropna()
 
     if position_series is not None:
-        # Align positions (assume position_series has same index)
+        if not isinstance(position_series, pd.Series):
+            return Err(f"Expected pd.Series for position, got {type(position_series)}")
         if len(position_series) != len(price_series):
             return Err("Position series length differs from price series")
-        # Strategy returns = position * asset returns (lag position by 1 to avoid lookahead)
-        # We'll assume position_series already contains the position for the next period.
-        # For simplicity, we multiply aligned returns by position.
-        # In real backtest, positions should be shifted.
-        # Here we assume the input dataframe already has the correct position column.
+        # Align returns index with position index (returns has one less element after dropna)
+        # We'll assume position_series has same index as price_series, and we multiply aligned returns.
+        # In practice, positions are usually for the next period, but for simplicity we use aligned.
         returns = returns * position_series.loc[returns.index]
 
     return Ok(returns)
@@ -178,18 +175,20 @@ def calculate_returns_series(
 def calculate_annualized_return(
     total_return: float,
     days: int,
-    annualization_factor: int = 252
+    annualization_factor: int = 365
 ) -> float:
     """Convert total return over days to annualized return."""
     if days <= 0:
         return 0.0
     years = days / annualization_factor
-    return (1 + total_return) ** (1 / years) - 1 if years > 0 else 0.0
+    if years <= 0:
+        return 0.0
+    return (1 + total_return) ** (1 / years) - 1
 
 
 def calculate_volatility(
     returns: pd.Series,
-    annualization_factor: int = 252
+    annualization_factor: int = 365
 ) -> float:
     """Annualized volatility."""
     if returns.empty:
@@ -200,12 +199,12 @@ def calculate_volatility(
 def calculate_sharpe_ratio(
     returns: pd.Series,
     risk_free_rate: float = 0.0,
-    annualization_factor: int = 252
+    annualization_factor: int = 365
 ) -> float:
     """Annualized Sharpe ratio."""
     if returns.empty:
         return 0.0
-    excess_returns = returns - risk_free_rate / annualization_factor
+    excess_returns = returns - (risk_free_rate / annualization_factor)
     if excess_returns.std() == 0:
         return 0.0
     return float(np.sqrt(annualization_factor) * excess_returns.mean() / excess_returns.std())
@@ -214,16 +213,19 @@ def calculate_sharpe_ratio(
 def calculate_sortino_ratio(
     returns: pd.Series,
     risk_free_rate: float = 0.0,
-    annualization_factor: int = 252
+    annualization_factor: int = 365
 ) -> float:
     """Sortino ratio (uses downside deviation)."""
-    if returns.empty:
+    if len(returns) == 0:
         return 0.0
-    excess_returns = returns - risk_free_rate / annualization_factor
-    downside = returns[returns < 0].std()
-    if downside == 0 or np.isnan(downside):
+    excess_returns = returns - (risk_free_rate / annualization_factor)
+    downside_returns = returns[returns < 0]
+    if len(downside_returns) == 0:
         return 0.0
-    return float(np.sqrt(annualization_factor) * excess_returns.mean() / downside)
+    downside_std = downside_returns.std()
+    if downside_std == 0 or np.isnan(downside_std):
+        return 0.0
+    return float(np.sqrt(annualization_factor) * excess_returns.mean() / downside_std)
 
 
 def calculate_drawdown_series(returns: pd.Series) -> pd.Series:
@@ -235,7 +237,9 @@ def calculate_drawdown_series(returns: pd.Series) -> pd.Series:
 
 
 def calculate_max_drawdown(returns: pd.Series) -> float:
-    """Maximum drawdown (negative number, e.g., -0.25 for 25% loss)."""
+    """Maximum drawdown (negative number)."""
+    if returns.empty:
+        return 0.0
     drawdown = calculate_drawdown_series(returns)
     return float(drawdown.min())
 
@@ -243,12 +247,12 @@ def calculate_max_drawdown(returns: pd.Series) -> float:
 def calculate_max_drawdown_duration(returns: pd.Series) -> int:
     """
     Calculate the longest drawdown duration in days.
-    Returns number of days (assuming daily data).
+    Returns number of days.
     """
+    if returns.empty:
+        return 0
     drawdown = calculate_drawdown_series(returns)
-    # Mark periods where drawdown != 0
     in_drawdown = drawdown < 0
-    # Find lengths of consecutive True
     if not in_drawdown.any():
         return 0
     # Identify transitions
@@ -259,17 +263,20 @@ def calculate_max_drawdown_duration(returns: pd.Series) -> int:
 
 
 def calculate_trade_statistics(
-    trades_df: pd.DataFrame,
-    price_col: str = "close"
+    trades_df: pd.DataFrame
 ) -> Result[Dict[str, Any], str]:
     """
     Calculate trade‑level metrics from a DataFrame of trades.
-    Expected columns: entry_time, exit_time, entry_price, exit_price, size (optional).
-    Returns a dictionary with mixed types (int for counts, float for ratios).
+    Expected columns: entry_price, exit_price, optional size.
+    Returns a dictionary with ints and floats.
     """
     # Guard clauses
-    if trades_df is None or trades_df.empty:
-        return Err("No trades to analyze")
+    if trades_df is None:
+        return Err("Trades DataFrame is None")
+    if not isinstance(trades_df, pd.DataFrame):
+        return Err(f"Expected pd.DataFrame, got {type(trades_df)}")
+    if trades_df.empty:
+        return Err("Trades DataFrame is empty")
 
     required = ["entry_price", "exit_price"]
     missing = [c for c in required if c not in trades_df.columns]
@@ -282,7 +289,7 @@ def calculate_trade_statistics(
     # Calculate profit per trade
     df["profit"] = df["exit_price"] - df["entry_price"]
     if "size" in df.columns:
-        df["profit"] *= df["size"]
+        df["profit"] = df["profit"] * df["size"]
 
     # Separate winning and losing trades
     winning = df[df["profit"] > 0]
@@ -292,33 +299,31 @@ def calculate_trade_statistics(
     winning_trades = len(winning)
     losing_trades = len(losing)
 
-    # Guard against division by zero
     win_rate = winning_trades / total_trades if total_trades > 0 else 0.0
 
-    # Use .item() to extract scalar values from pandas Series (appeases strict type checkers)
+    # Gunakan float() langsung, tanpa .item() karena mean() sudah mengembalikan float
     if winning_trades > 0:
-        avg_win = winning["profit"].mean().item()
-        total_win = winning["profit"].sum().item()
+        avg_win = float(winning["profit"].mean())
+        total_win = float(winning["profit"].sum())
     else:
         avg_win = 0.0
         total_win = 0.0
 
     if losing_trades > 0:
-        avg_loss = losing["profit"].mean().item()
-        total_loss = losing["profit"].sum().item()
+        avg_loss = float(losing["profit"].mean())
+        total_loss = float(losing["profit"].sum())
     else:
         avg_loss = 0.0
         total_loss = 0.0
 
-    # Profit factor: handle case with no losing trades (infinite)
+    # Profit factor: handle case with no losing trades
     if losing_trades == 0 or total_loss == 0:
         profit_factor = float('inf')
     else:
         profit_factor = abs(total_win / total_loss)
 
-    expectancy = df["profit"].mean().item() if total_trades > 0 else 0.0
+    expectancy = float(df["profit"].mean()) if total_trades > 0 else 0.0
 
-    # Return dictionary with explicit type casting to ensure Python native types
     return Ok({
         "total_trades": int(total_trades),
         "winning_trades": int(winning_trades),
@@ -330,7 +335,6 @@ def calculate_trade_statistics(
         "expectancy": float(expectancy)
     })
 
-
 def calculate_var_cvar(
     returns: pd.Series,
     confidence: float = 0.95
@@ -341,9 +345,15 @@ def calculate_var_cvar(
     if returns.empty:
         return 0.0, 0.0
     sorted_returns = returns.sort_values()
-    var_index = int((1 - confidence) * len(sorted_returns))
+    n = len(sorted_returns)
+    var_index = int((1 - confidence) * n)
+    if var_index >= n:
+        var_index = n - 1
     var = float(sorted_returns.iloc[var_index])
-    cvar = float(sorted_returns.iloc[:var_index].mean()) if var_index > 0 else var
+    if var_index > 0:
+        cvar = float(sorted_returns.iloc[:var_index].mean())
+    else:
+        cvar = var
     return var, cvar
 
 
@@ -351,8 +361,9 @@ def calculate_ulcer_index(returns: pd.Series) -> float:
     """
     Ulcer Index: square root of the mean squared drawdown.
     """
+    if returns.empty:
+        return 0.0
     drawdown = calculate_drawdown_series(returns)
-    # Use percentage drawdown (negative values) – ulcer uses depth, not sign.
     dd_squared = (drawdown ** 2).mean()
     return float(np.sqrt(dd_squared))
 
@@ -361,7 +372,7 @@ def calculate_ulcer_index(returns: pd.Series) -> float:
 # MAIN ANALYTICS CLASS (THE ORCHESTRATOR)
 # ============================================================================
 
-class pipelineanalytics:
+class PipelineAnalytics:
     """
     Industrial‑grade analytics generator for backtest results.
     Consumes a Polars DataFrame (or Pandas) with at least:
@@ -370,13 +381,14 @@ class pipelineanalytics:
     Optionally can include trades table.
     """
 
-    def __init__(self, config: Optional[AnalyticsConfig] = None):
+    def __init__(self, config: Optional[AnalyticsConfig] = None) -> None:
         self.config = config or AnalyticsConfig()
         self.logger = self._setup_logging()
-        self._phase = AnalyticsPhase.VALIDATION
+        self._phase: AnalyticsPhase = AnalyticsPhase.VALIDATION
         self._metrics: Optional[PerformanceMetrics] = None
         self._results_df: Optional[Union[pl.DataFrame, pd.DataFrame]] = None
         self._trades_df: Optional[pd.DataFrame] = None
+        self._judgment: Optional[Judgment] = None
 
     def _setup_logging(self) -> logging.Logger:
         logger = logging.getLogger("PipelineAnalytics")
@@ -411,9 +423,9 @@ class pipelineanalytics:
         else:
             return Err(f"Unsupported type: {type(results)}. Expected Polars or Pandas DataFrame.")
 
-        # Convert to Pandas for easier processing (most metrics use pandas)
+        # Convert to Pandas for easier processing
         if isinstance(results, pl.DataFrame):
-            df = results.to_pandas()
+            df: pd.DataFrame = results.to_pandas()
         else:
             df = results.copy()
 
@@ -436,10 +448,10 @@ class pipelineanalytics:
         returns: Optional[pd.Series] = None
 
         if "cumulative_returns" in df.columns:
-            # Derive daily returns from cumulative
             returns_series = df["cumulative_returns"].diff().dropna()
             if returns_series.empty:
                 return Err("cumulative_returns column yields no returns after diff")
+            returns = returns_series
         elif "price" in df.columns and "position" in df.columns:
             price_series = df["price"]
             position_series = df["position"]
@@ -448,18 +460,20 @@ class pipelineanalytics:
                 price_series = price_series.iloc[:, 0]
             if isinstance(position_series, pd.DataFrame):
                 position_series = position_series.iloc[:, 0]
+            # Ensure they are Series
+            if not isinstance(price_series, pd.Series):
+                return Err("price column is not a Series after extraction")
+            if not isinstance(position_series, pd.Series):
+                return Err("position column is not a Series after extraction")
 
             returns_res = calculate_returns_series(price_series, position_series)
             if returns_res.is_err():
-                err_raw = returns_res.unwrap_err()
-                err_msg = str(err_raw) if err_raw is not None else "Unknow error in returns calculation"
-                return Err(err_msg)
+                return Err(returns_res.unwrap_err())
             returns = returns_res.unwrap()
         else:
-            # Try to infer from close_* columns? For simplicity, require explicit.
             return Err("DataFrame must contain either 'cumulative_returns' or both 'price' and 'position' columns.")
 
-        # Final guard: returns must be a non‑empty series
+        # Final guard: returns must be a non‑empty Series
         if returns is None:
             return Err("Failed to derive returns series")
         if not isinstance(returns, pd.Series):
@@ -491,8 +505,7 @@ class pipelineanalytics:
             if trade_res.is_ok():
                 trade_stats = trade_res.unwrap()
             else:
-                err_raw = trade_res.unwrap_err()
-                err_msg = str(err_raw) if err_raw is not None else "Unknow trade statistics error"
+                # Log warning but continue with empty stats
                 self.logger.warning(f"Trade statistics calculation failed: {trade_res.unwrap_err()}")
 
         # --- Risk metrics ---
@@ -540,6 +553,35 @@ class pipelineanalytics:
             "var_confidence": self.config.value_at_risk_confidence,
         }
 
+
+    def judge(self, criteria: Optional[CompositeCriterion] = None) -> Result[Judgment, str]:
+        """
+        Evaluate the computed metrics against a set of criteria.
+        If no criteria provided, uses the default from config or creates default.
+        """
+        if self._metrics is None:
+            return Err("No metrics computed. Call compute_metrics() first.")
+
+        self._phase = AnalyticsPhase.JUDGMENT
+
+        # Determine which criteria to use
+        if criteria is None:
+            criteria = self.config.judgment_criteria or create_default_acceptance_criteria()
+
+        # Evaluate composite to get a single CriterionResult
+        res = criteria.evaluate(self._metrics)
+        if res.is_err():
+            return Err(res.unwrap_err())
+        criterion_result = res.unwrap()
+
+        # Use judge to produce judgment (even with one result)
+        judge = StrategyJudge(name=self.config.judge_name)
+        judge_res = judge.judge([criterion_result])
+        if judge_res.is_ok():
+            self._judgment = judge_res.unwrap()
+        return judge_res
+
+
     # ============================================================================
     # VISUALIZATION (THE DOPAMINE HIT)
     # ============================================================================
@@ -569,31 +611,25 @@ class pipelineanalytics:
             warnings.simplefilter("ignore")
             plt.style.use(self.config.plot_style)
 
-         # --- Extract returns series safely ---
         df = self._results_df  # Pandas DataFrame
 
-        # Determine returns series (same logic as compute_metrics)
+        # Determine returns series for plots (same logic as compute_metrics)
         returns: Optional[pd.Series] = None
         if "cumulative_returns" in df.columns:
             returns = df["cumulative_returns"].diff().dropna()
-            if returns.empty:
-                self.logger.warning("No returns derived from cumulative_returns")
         elif "price" in df.columns and "position" in df.columns:
             price_series = df["price"]
             position_series = df["position"]
-            # Safeguard: if selection returns DataFrame, take first columns
             if isinstance(price_series, pd.DataFrame):
                 price_series = price_series.iloc[:, 0]
             if isinstance(position_series, pd.DataFrame):
                 position_series = position_series.iloc[:, 0]
-            returns_res = calculate_returns_series(price_series, position_series)
-            if returns_res.is_ok():
-                returns = returns_res.unwrap()
-            else:
-                self.logger.warning(f"Cannot derive returns for plots: {returns_res.unwrap_err()}")
-        else:
-            self.logger.warning("No returns data available for plots")
-
+            if isinstance(price_series, pd.Series) and isinstance(position_series, pd.Series):
+                returns_res = calculate_returns_series(price_series, position_series)
+                if returns_res.is_ok():
+                    returns = returns_res.unwrap()
+        if returns is not None and returns.empty:
+            returns = None
 
         # 1. Equity curve with drawdown
         fig1, axes = plt.subplots(2, 1, figsize=self.config.figsize, sharex=True)
@@ -601,15 +637,17 @@ class pipelineanalytics:
 
         # Equity curve
         if "cumulative_returns" in df.columns:
-            cumulative = (1 + self._results_df["cumulative_returns"]).cumprod()
+            cumulative = (1 + df["cumulative_returns"]).cumprod()
             ax1.plot(df["timestamp"], cumulative, color='blue', linewidth=1.5, label='Equity')
         elif "price" in df.columns:
-            # Use price normalized to starting value
             price_series = df["price"]
             if isinstance(price_series, pd.DataFrame):
                 price_series = price_series.iloc[:, 0]
-            cumulative = price_series / price_series.iloc[0]
-            ax1.plot(df["timestamp"], cumulative, color='blue', linewidth=1.5, label='Equity')
+            if isinstance(price_series, pd.Series):
+                first_price = price_series.iloc[0]
+                if first_price != 0:
+                    cumulative = price_series / first_price
+                    ax1.plot(df["timestamp"], cumulative, color='blue', linewidth=1.5, label='Equity')
         else:
             ax1.text(0.5, 0.5, "No equity data", ha='center', va='center', transform=ax1.transAxes)
 
@@ -621,20 +659,22 @@ class pipelineanalytics:
         # Drawdown
         if returns is not None and not returns.empty:
             drawdown = calculate_drawdown_series(returns)
-            # align with timestamp (drawdown index is returns index, need to align)
-            # For simplicity, we plot drawdown on same x-axis but shifted.
-            # We'll just plot using the same timestamp index as returns.
-            if len(drawdown) == len(df) -1:
+            # Align timestamps
+            if len(drawdown) == len(df) - 1:
                 drawdown_index = df["timestamp"].iloc[1:]
+            elif len(drawdown) == len(df):
+                drawdown_index = df["timestamp"]
             else:
                 drawdown_index = df["timestamp"].iloc[-len(drawdown):]
             ax2.fill_between(drawdown_index, 0, drawdown * 100, color='red', alpha=0.3, label='Drawdown %')
-            ax2.set.text(0.5, 0.5, "No returns data", ha='center', va='center', transform=ax2.transAxes)
-            ax2.set_ylabel('Drawdown (%)')
-            ax2.set_xlabel('Date')
-            ax2.set_title('Drawdown')
-            ax2.legend(loc='lower left')
-            ax2.grid(True, alpha=0.3)
+        else:
+            ax2.text(0.5, 0.5, "No returns data", ha='center', va='center', transform=ax2.transAxes)
+
+        ax2.set_ylabel('Drawdown (%)')
+        ax2.set_xlabel('Date')
+        ax2.set_title('Drawdown')
+        ax2.legend(loc='lower left')
+        ax2.grid(True, alpha=0.3)
 
         # Format x-axis
         for ax in axes:
@@ -646,16 +686,16 @@ class pipelineanalytics:
         figures["equity_drawdown"] = fig1
 
         # 2. Returns distribution
-        fig2, ax = plt.subplots(figsize=(self.config.figsize[0], 5))
-        if returns is not None:
+        if returns is not None and not returns.empty:
+            fig2, ax = plt.subplots(figsize=(self.config.figsize[0], 5))
             ax.hist(returns * 100, bins=50, color='purple', alpha=0.7, edgecolor='black')
             ax.axvline(x=0, color='red', linestyle='--', linewidth=1)
             ax.set_xlabel('Daily Return (%)')
             ax.set_ylabel('Frequency')
             ax.set_title('Distribution of Daily Returns')
             ax.grid(True, alpha=0.3)
-        plt.tight_layout()
-        figures["returns_dist"] = fig2
+            plt.tight_layout()
+            figures["returns_dist"] = fig2
 
         # 3. Rolling Sharpe (if enough data)
         if returns is not None and len(returns) > 252:
@@ -663,7 +703,13 @@ class pipelineanalytics:
             rolling_sharpe = returns.rolling(252).apply(
                 lambda x: calculate_sharpe_ratio(x, self.config.risk_free_rate, 252)
             )
-            ax.plot(self._results_df["timestamp"].iloc[1:][rolling_sharpe.index], rolling_sharpe, color='green', linewidth=1)
+            if len(rolling_sharpe) == len(df) - 1:
+                time_index = df["timestamp"].iloc[1:]
+            elif len(rolling_sharpe) == len(df):
+                time_index = df["timestamp"]
+            else:
+                time_index = df["timestamp"].iloc[-len(rolling_sharpe):]
+            ax.plot(time_index, rolling_sharpe, color='green', linewidth=1)
             ax.axhline(y=1.0, color='gray', linestyle='--', alpha=0.7)
             ax.set_ylabel('Sharpe Ratio (1y rolling)')
             ax.set_title('Rolling Sharpe Ratio')
@@ -672,22 +718,26 @@ class pipelineanalytics:
             figures["rolling_sharpe"] = fig3
 
         # 4. Trade markers (if trades available)
-        if self._trades_df is not None and not self._trades_df.empty and "price" in self._results_df.columns:
+        if self._trades_df is not None and not self._trades_df.empty and "price" in df.columns:
             fig4, ax = plt.subplots(figsize=self.config.figsize)
-            ax.plot(self._results_df["timestamp"], self._results_df["price"], color='black', alpha=0.5, linewidth=1)
-            # Mark entries and exits
-            if "entry_time" in self._trades_df.columns and "entry_price" in self._trades_df.columns:
-                ax.scatter(self._trades_df["entry_time"], self._trades_df["entry_price"],
-                           marker='^', color='green', s=100, label='Entry', zorder=5)
-            if "exit_time" in self._trades_df.columns and "exit_price" in self._trades_df.columns:
-                ax.scatter(self._trades_df["exit_time"], self._trades_df["exit_price"],
-                           marker='v', color='red', s=100, label='Exit', zorder=5)
-            ax.set_xlabel('Date')
-            ax.set_ylabel('Price')
-            ax.set_title('Trades on Price Chart')
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-            figures["trades"] = fig4
+            price_series = df["price"]
+            if isinstance(price_series, pd.DataFrame):
+                price_series = price_series.iloc[:, 0]
+            if isinstance(price_series, pd.Series):
+                ax.plot(df["timestamp"], price_series, color='black', alpha=0.5, linewidth=1)
+                if "entry_time" in self._trades_df.columns and "entry_price" in self._trades_df.columns:
+                    ax.scatter(self._trades_df["entry_time"], self._trades_df["entry_price"],
+                               marker='^', color='green', s=100, label='Entry', zorder=5)
+                if "exit_time" in self._trades_df.columns and "exit_price" in self._trades_df.columns:
+                    ax.scatter(self._trades_df["exit_time"], self._trades_df["exit_price"],
+                               marker='v', color='red', s=100, label='Exit', zorder=5)
+                ax.set_xlabel('Date')
+                ax.set_ylabel('Price')
+                ax.set_title('Trades on Price Chart')
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+                plt.tight_layout()
+                figures["trades"] = fig4
 
         # Save if requested
         if save_plots and out_dir:
@@ -712,11 +762,10 @@ class pipelineanalytics:
         m = self._metrics
 
         if format == "json":
-            import json
             return Ok(json.dumps(m.to_dict(), indent=2))
 
         # Text / Markdown report
-        lines = []
+        lines: List[str] = []
         lines.append("=" * 60)
         lines.append("PERFORMANCE REPORT")
         lines.append("=" * 60)
@@ -748,7 +797,6 @@ class pipelineanalytics:
 
         report = "\n".join(lines)
         if format == "markdown":
-            # Convert to markdown (simple)
             report = report.replace("=" * 60, "---")
 
         self._phase = AnalyticsPhase.COMPLETED
@@ -771,11 +819,10 @@ class pipelineanalytics:
 # FACTORY / QUICK ACCESS
 # ============================================================================
 
-def create_analytics(config: Optional[Dict[str, Any]] = None) -> PipelineAnalytics:
+def create_analytics(config: Optional[Union[Dict[str, Any], AnalyticsConfig]] = None) -> PipelineAnalytics:
     """Convenience factory for PipelineAnalytics."""
     if config is None:
         return PipelineAnalytics()
-    # Convert dict to AnalyticsConfig if needed
     if isinstance(config, dict):
         cfg = AnalyticsConfig(**config)
     elif isinstance(config, AnalyticsConfig):
@@ -788,7 +835,7 @@ def create_analytics(config: Optional[Dict[str, Any]] = None) -> PipelineAnalyti
 def quick_metrics(
     df: Union[pl.DataFrame, pd.DataFrame],
     trades: Optional[pd.DataFrame] = None,
-    **kwargs
+    **kwargs: Any
 ) -> Result[PerformanceMetrics, str]:
     """One‑shot function to compute metrics without instantiating the class."""
     analytics = PipelineAnalytics()
