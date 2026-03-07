@@ -216,10 +216,10 @@ if __name__ == "__main__":
         anchor_coin="BTC",
         start_date="2025-09-01",
         end_date="2025-09-30",
-        space_name="kamikaze",
-        max_rows=10000,
-        max_candidates=5,
-        n_workers=2
+        space_name="shotgun",
+        max_rows=50000,
+        max_candidates=20,
+        n_workers=4
     )
     if result.is_err():
         logger.error(f"❌ Smoke test failed: {result.unwrap_err()}")

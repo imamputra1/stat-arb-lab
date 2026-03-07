@@ -128,23 +128,31 @@ class QuantumParameterSpace:
     def dirty_shotgun(cls) -> 'QuantumParameterSpace':
         """
         Wide random sampling to discover promising regions.
-        Uses continuous ranges for numerical parameter.
+        Updated with MFT-friendly parameter ranges:
+        - entry_z_score: discrete [2.0, 2.5, 3.0]
+        - exit_z_score: discrete [0.5, 1.0]
+        - stop_loss_z: discrete [4.0, 5.0]
+        - Q: discrete [1e-5, 1e-6, 1e-7]
+        - R: discrete [1e-2, 1e-3, 1e-4]
+        - volatility_window: discrete [60, 120, 240]
+        - warmup_ticks: unchanged [100, 200]
         """
         dimensions = [
-            ParameterDimension("entry_z_score", [1.5, 3.5], ParameterType.THRESHOLD),
-            ParameterDimension("exit_z_score", [0.0, 1.0], ParameterType.THRESHOLD),
-            ParameterDimension("stop_loss_z", [3.0, 6.0], ParameterType.THRESHOLD),
-            
+            # Thresholds (now discrete to focus on proven values)
+            ParameterDimension("entry_z_score", [1.5, 2.0, 2.5], ParameterType.THRESHOLD),
+            ParameterDimension("exit_z_score", [0.0, 0.5], ParameterType.THRESHOLD),
+            ParameterDimension("stop_loss_z", [4.0, 5.0], ParameterType.THRESHOLD),
+
             # Windows (discrete steps)
-            ParameterDimension("volatility_window", [30, 60, 120, 240], ParameterType.TEMPORAL),
+            ParameterDimension("volatility_window", [60, 120, 240], ParameterType.TEMPORAL),
             ParameterDimension("warmup_ticks", [100, 200], ParameterType.TEMPORAL),
-            
-            # Noise (Log uniform)
-            ParameterDimension("Q", [1e-10, 1e-5], ParameterType.NOISE),
-            ParameterDimension("R", [1e-6, 1e-1], ParameterType.NOISE)
+
+            # Noise (discrete values, no longer continuous)
+            ParameterDimension("Q", [1e-7, 1e-8, 1e-9], ParameterType.NOISE),
+            ParameterDimension("R", [5e-6, 1e-6, 5e-7], ParameterType.NOISE)
         ]
         return cls("shotgun", dimensions, SpaceStrategy.SHOTGUN)
-
+    
     @classmethod
     def kamikaze_mode(cls) -> 'QuantumParameterSpace':
         """Extreme ranges – for stress testing and forcing pipeline to produce signals."""

@@ -466,10 +466,16 @@ class PipelineAnalytics:
             if not isinstance(position_series, pd.Series):
                 return Err("position column is not a Series after extraction")
 
-            returns_res = calculate_returns_series(price_series, position_series)
-            if returns_res.is_err():
-                return Err(returns_res.unwrap_err())
-            returns = returns_res.unwrap()
+            # ---> 💉 SURGERY FIX: RUMUS RETURN UNTUK SPREAD (MENGHINDARI INF) <---
+            # Karena price kita adalah log-spread, return adalah SELISIH (.diff), bukan Persentase (.pct_change)
+            # Kita kalikan posisi KEMARIN (shift) dengan selisih harga HARI INI (diff)
+            
+            raw_diff = price_series.diff().fillna(0)
+            shifted_pos = position_series.shift(1).fillna(0)
+            
+            # Hitung returns dan paksa nilai yang tidak masuk akal (inf) menjadi 0
+            returns = shifted_pos * raw_diff
+            returns = returns.replace([float('inf'), float('-inf')], 0.0).fillna(0.0)
         else:
             return Err("DataFrame must contain either 'cumulative_returns' or both 'price' and 'position' columns.")
 
@@ -500,6 +506,32 @@ class PipelineAnalytics:
 
         # --- Trade metrics (if trades provided) ---
         trade_stats: Dict[str, Any] = {}
+        
+        if (trades is None or trades.empty) and "price" in df.columns and "position" in df.columns:
+            trades_list = []
+            entry_price = 0.0
+            current_pos = 0
+
+            pos_arr = df["position"].values
+            price_arr = df["price"].values
+
+            for i in range(len(pos_arr)):
+                pos = pos_arr[i]
+                price = pos_arr[i]
+
+                if pos != current_pos:
+                    if current_pos != 0:
+                        trades_list.append({
+                            "entry_price": entry_price,
+                            "exit_price": price,
+                            "size": float(current_pos)
+                        })
+                    if pos != 0:
+                        entry_price = price
+
+                current_pos = pos
+            trades = pd.DataFrame(trades_list)
+
         if trades is not None and not trades.empty:
             trade_res = calculate_trade_statistics(trades)
             if trade_res.is_ok():
