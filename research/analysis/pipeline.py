@@ -291,6 +291,10 @@ def calculate_trade_statistics(
     if "size" in df.columns:
         df["profit"] = df["profit"] * df["size"]
 
+    TRANSACTION_COST = 0.002
+    df["fee"] = df["entry_price"].abs() * TRANSACTION_COST
+    df["profit"] = df["profit"] - df["fee"]
+
     # Separate winning and losing trades
     winning = df[df["profit"] > 0]
     losing = df[df["profit"] < 0]
@@ -495,7 +499,7 @@ class PipelineAnalytics:
         self._phase = AnalyticsPhase.METRIC_CALCULATION
 
         # --- Core metrics ---
-        total_return = float((1 + returns).prod() - 1)
+        total_return = float(returns.sum())
         annualized_return = calculate_annualized_return(total_return, total_days, self.config.annualization_factor)
         volatility = calculate_volatility(returns, self.config.annualization_factor)
         sharpe = calculate_sharpe_ratio(returns, self.config.risk_free_rate, self.config.annualization_factor)
@@ -517,7 +521,7 @@ class PipelineAnalytics:
 
             for i in range(len(pos_arr)):
                 pos = pos_arr[i]
-                price = pos_arr[i]
+                price = price_arr[i] # ---> 💉 SURGERY FIX: HARUS price_arr, bukan pos_arr! <---
 
                 if pos != current_pos:
                     if current_pos != 0:
@@ -557,7 +561,7 @@ class PipelineAnalytics:
             total_trades=trade_stats.get("total_trades", 0),
             winning_trades=trade_stats.get("winning_trades", 0),
             losing_trades=trade_stats.get("losing_trades", 0),
-            win_rate=trade_stats.get("win_rate", 0.0),
+            win_rate=trade_stats.get("win_rate", 0.0) * 100,
             avg_win=trade_stats.get("avg_win", 0.0),
             avg_loss=trade_stats.get("avg_loss", 0.0),
             profit_factor=trade_stats.get("profit_factor", 0.0),

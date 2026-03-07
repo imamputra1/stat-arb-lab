@@ -330,11 +330,11 @@ def create_default_acceptance_criteria() -> CompositeCriterion:
     """
     return CompositeCriterion(
         criteria=[
-            SharpeRatioCriterion(min_sharpe=1.0),
-            MaxDrawdownCriterion(max_allowed_drawdown=-0.25),
-            TotalReturnCriterion(min_return=0.0),
-            ProfitFactorCriterion(min_profit_factor=1.2),
-            TradeCountCriterion(min_trades=20),
+            SharpeRatioCriterion(min_sharpe=1.2, severity=CriterionSeverity.CRITICAL),
+            MaxDrawdownCriterion(max_allowed_drawdown=-0.15, severity=CriterionSeverity.CRITICAL),
+            TotalReturnCriterion(min_return=0.05, severity=CriterionSeverity.CRITICAL),
+            ProfitFactorCriterion(min_profit_factor=1.5, severity=CriterionSeverity.CRITICAL),
+            TradeCountCriterion(min_trades=30, severity=CriterionSeverity.WARNING),
         ],
         name="DefaultAcceptance"
     )

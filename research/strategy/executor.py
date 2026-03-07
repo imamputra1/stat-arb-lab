@@ -142,11 +142,6 @@ def run_kalman_backtest(
         return Err("Missing 'signal_type' column in strategy output")
 
     # Define mapping for all actionable signals.
-    # NOTE: "NEUTRAL" is intentionally excluded → becomes NaN.
-    # ---> 💉 SURGERY FIX: LOGIKA DIBALIK (THE PHASE INVERTER) <---
-    # Kita balik perintahnya agar sesuai dengan prinsip Mean Reversion!
-
-    # ---> 💉 REVERT: KEMBALI KE LOGIKA ASLI (YANG BENAR) <---
     signal_map = {
         "BUY": 1, "Buy": 1, "buy": 1, "LONG": 1, "Long": 1, "long": 1,
         "SELL": -1, "Sell": -1, "sell": -1, "SHORT": -1, "Short": -1, "short": -1,
