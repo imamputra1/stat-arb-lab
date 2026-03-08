@@ -143,34 +143,28 @@ def calculate_returns_series(
     position_series: Optional[pd.Series] = None
 ) -> Result[pd.Series, str]:
     """
-    Calculate daily returns from price series, optionally adjusted for position.
-    Expects price series to be sorted ascending by time.
+    Calculate returns suitable for Spread Trading (difference, not percentage).
     """
     # Guard clauses
-    if price_series is None:
-        return Err("Price series is None")
-    if not isinstance(price_series, pd.Series):
-        return Err(f"Expected pd.Series, got {type(price_series)}")
-    if price_series.empty:
+    if price_series is None or price_series.empty:
         return Err("Price series is empty")
-    if price_series.isnull().any():
-        return Err("Price series contains NaN values")
 
-    # Simple returns: (p_t / p_{t-1}) - 1
-    returns = price_series.pct_change().dropna()
+    # ---> 💉 SURGERY FIX: SPREAD RETURNS (Anti -inf) <---
+    # Gunakan selisih absolut (diff), bukan persentase!
+    returns = price_series.diff().fillna(0.0)
 
     if position_series is not None:
         if not isinstance(position_series, pd.Series):
             return Err(f"Expected pd.Series for position, got {type(position_series)}")
-        if len(position_series) != len(price_series):
-            return Err("Position series length differs from price series")
-        # Align returns index with position index (returns has one less element after dropna)
-        # We'll assume position_series has same index as price_series, and we multiply aligned returns.
-        # In practice, positions are usually for the next period, but for simplicity we use aligned.
-        returns = returns * position_series.loc[returns.index]
+        
+        # Kalikan posisi kemarin dengan selisih harga hari ini
+        shifted_pos = position_series.shift(1).fillna(0.0)
+        returns = returns * shifted_pos
+
+    # Sapu bersih semua sisa -inf atau inf jika ada
+    returns = returns.replace([float('inf'), float('-inf')], 0.0).fillna(0.0)
 
     return Ok(returns)
-
 
 def calculate_annualized_return(
     total_return: float,
@@ -433,18 +427,30 @@ class PipelineAnalytics:
         else:
             df = results.copy()
 
-        # --- Validate required columns ---
+# --- Validate required columns ---
         required_cols = ["timestamp"]
         missing = [c for c in required_cols if c not in df.columns]
         if missing:
             return Err(f"Missing required columns: {missing}")
 
-        # Ensure timestamp is datetime
+        # ---> 🧹 KEMBALI KE STANDAR ELEGAN <---
         if not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
             try:
-                df["timestamp"] = pd.to_datetime(df["timestamp"])
-            except Exception as e:
-                return Err(f"Cannot convert timestamp to datetime: {e}")
+                # Coba konversi dengan asumsi integer milidetik
+                # Gunakan pd.to_numeric dulu untuk memastikan angka
+                timestamp_numeric = pd.to_numeric(df["timestamp"], errors='coerce')
+                if timestamp_numeric.isna().any():
+                    # Jika ada NaN, mungkin format string ISO
+                    df["timestamp"] = pd.to_datetime(df["timestamp"])
+                else:
+                    # Semua numerik, konversi dengan unit='ms'
+                    df["timestamp"] = pd.to_datetime(timestamp_numeric, unit='ms')
+            except Exception:
+                # Fallback terakhir
+                try:
+                    df["timestamp"] = pd.to_datetime(df["timestamp"])
+                except Exception as e2:
+                    return Err(f"Cannot convert timestamp to datetime: {e2}")
 
         df = df.sort_values("timestamp").reset_index(drop=True)
 
@@ -476,9 +482,20 @@ class PipelineAnalytics:
             
             raw_diff = price_series.diff().fillna(0)
             shifted_pos = position_series.shift(1).fillna(0)
-            
-            # Hitung returns dan paksa nilai yang tidak masuk akal (inf) menjadi 0
-            returns = shifted_pos * raw_diff
+
+            # 1. Hitung Gross Profit (Murni selisih pergerakan harga)
+            gross_returns = shifted_pos * raw_diff
+
+            # 2. Hitung Fee (Biaya Transaksi) HANYA saat posisi berubah!
+            # Jika posisi berubah (0 ke 1, atau 1 ke 0), kita bayar fee 0.1% per leg (Total 0.2% per round trip)
+            pos_changes = position_series.diff().fillna(0).abs()
+            FEE_PER_LEG = 0.001
+            fee_series = pos_changes * price_series.abs() * FEE_PER_LEG
+
+            # 3. Hitung Net Profit (Gross dikurangi Fee)
+            returns = gross_returns - fee_series
+
+            # 4. Bersihkan sisa-sisa angka anomali
             returns = returns.replace([float('inf'), float('-inf')], 0.0).fillna(0.0)
         else:
             return Err("DataFrame must contain either 'cumulative_returns' or both 'price' and 'position' columns.")
@@ -499,13 +516,22 @@ class PipelineAnalytics:
         self._phase = AnalyticsPhase.METRIC_CALCULATION
 
         # --- Core metrics ---
-        total_return = float(returns.sum())
+        abs_profit = float(returns.sum())
+        # Cari harga awal untuk membagi profit agar menjadi persentase yang masuk akal
+        initial_price = 1.0
+        if "price" in df.columns:
+            first_valid = df["price"].loc[df["price"] != 0].first_valid_index()
+            if first_valid is not None:
+                initial_price = abs(float(df["price"].loc[first_valid]))
+        total_return = abs_profit / initial_price
         annualized_return = calculate_annualized_return(total_return, total_days, self.config.annualization_factor)
         volatility = calculate_volatility(returns, self.config.annualization_factor)
         sharpe = calculate_sharpe_ratio(returns, self.config.risk_free_rate, self.config.annualization_factor)
         sortino = calculate_sortino_ratio(returns, self.config.risk_free_rate, self.config.annualization_factor)
         max_dd = calculate_max_drawdown(returns)
-        max_dd_duration = calculate_max_drawdown_duration(returns)
+
+        max_dd_duration_minutes = calculate_max_drawdown_duration(returns)
+        max_dd_duration = int(max_dd_duration_minutes / 1440)
         calmar = abs(annualized_return / max_dd) if max_dd != 0 else 0.0
 
         # --- Trade metrics (if trades provided) ---
@@ -667,7 +693,7 @@ class PipelineAnalytics:
         if returns is not None and returns.empty:
             returns = None
 
-        # 1. Equity curve with drawdown
+                # 1. Equity curve with drawdown
         fig1, axes = plt.subplots(2, 1, figsize=self.config.figsize, sharex=True)
         ax1, ax2 = axes
 

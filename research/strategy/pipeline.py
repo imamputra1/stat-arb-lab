@@ -45,7 +45,17 @@ def prepare_combat_data(
         df = df.sort_values("timestamp").reset_index(drop=True)
         df = df.ffill().bfill()
 
-        df["timestamp"] = pd.to_datetime(df["timestamp"]).astype("int64") // 10**6
+        # df["timestamp"] = pd.to_datetime(df["timestamp"]).astype("int64") // 10**6
+        # ---> 🔧 FIX: PASTIKAN TIMESTAMP INTEGER MILIDETIK <---
+        if pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
+            # Konversi datetime ke integer milidetik (nanodetik // 1e6)
+            df["timestamp"] = df["timestamp"].astype("int64") // 10**6
+        else:
+            # Jika sudah numerik, paksa ke int64
+            df["timestamp"] = pd.to_numeric(df["timestamp"], errors='coerce').astype("int64")
+            if df["timestamp"].isna().any():
+                return Err("Timestamp mengandung nilai non-numerik setelah konversi.")
+
 
         # 4. Validasi kolom harga ada
         col_target = f"close_{target_coin}"
@@ -54,6 +64,8 @@ def prepare_combat_data(
             return Err(f"Kolom harga tidak ditemukan: {col_target} atau {col_anchor}")
 
         # 5. Hitung spread_val wajib untuk Executor
+        if (df[col_target] <= 0).any() or (df[col_anchor] <= 0).any():
+            return Err("Harga tidak positif, tidak bisa menghitung log spread.")
         df["spread_val"] = np.log(df[col_target]) - hedge_ratio * np.log(df[col_anchor])
 
         return Ok(df)

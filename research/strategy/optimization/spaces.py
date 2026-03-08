@@ -139,17 +139,17 @@ class QuantumParameterSpace:
         """
         dimensions = [
             # Thresholds (now discrete to focus on proven values)
-            ParameterDimension("entry_z_score", [1.5, 2.0, 2.5], ParameterType.THRESHOLD),
+            ParameterDimension("entry_z_score", [2.5, 3.0, 3.5], ParameterType.THRESHOLD),
             ParameterDimension("exit_z_score", [0.0, 0.5], ParameterType.THRESHOLD),
             ParameterDimension("stop_loss_z", [5.0, 6.0], ParameterType.THRESHOLD),
 
             # Windows (discrete steps)
-            ParameterDimension("volatility_window", [120, 240, 480], ParameterType.TEMPORAL),
+            ParameterDimension("volatility_window", [240, 480], ParameterType.TEMPORAL),
             ParameterDimension("warmup_ticks", [100, 200], ParameterType.TEMPORAL),
 
             # Noise (discrete values, no longer continuous)
-            ParameterDimension("Q", [1e-10, 1e-11, 1e-12], ParameterType.NOISE),
-            ParameterDimension("R", [5e-6, 1e-6, 5e-7], ParameterType.NOISE)
+            ParameterDimension("Q", [1e-11, 1e-12, 1e-13], ParameterType.NOISE),
+            ParameterDimension("R", [5e-6, 1e-5], ParameterType.NOISE)
         ]
         return cls("shotgun", dimensions, SpaceStrategy.SHOTGUN)
     

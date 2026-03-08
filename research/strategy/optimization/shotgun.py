@@ -31,7 +31,8 @@ from core.shared import Result, Ok, Err
 from research.strategy.pipeline import prepare_combat_data
 from research.strategy.executor import run_kalman_backtest
 from research.strategy.optimization.spaces import get_parameter_space, SearchResult
-from research.analysis.pipeline import quick_metrics
+from research.analysis.pipeline import create_analytics, quick_metrics 
+from research.analysis.judgment.criteria import get_criteria_by_name  # noqa: E402
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
@@ -210,18 +211,75 @@ def run_shotgun_test(
 # CLI / notebook entry point – SMOKE TEST CONFIGURATION
 # ============================================================================
 if __name__ == "__main__":
-    # Smoke test: 10k rows, 5 candidates, 2 workers
+    from research.analysis.pipeline import create_analytics  # noqa: E402
+    from research.analysis.judgment.criteria import get_criteria_by_name  # noqa: E402
+
+    # 1. TEMBAKKAN SHOTGUN
     result = run_shotgun_test(
-        target_coin="DOGE",
+        target_coin="DOGE", 
         anchor_coin="BTC",
-        start_date="2025-09-01",
+        start_date="2025-09-01", 
         end_date="2025-09-30",
-        space_name="shotgun",
-        max_rows=50000,
-        max_candidates=20,
+        space_name="shotgun", 
+        max_rows=50000, 
+        max_candidates=10, 
         n_workers=4
     )
-    if result.is_err():
-        logger.error(f"❌ Smoke test failed: {result.unwrap_err()}")
-    else:
-        logger.info("✅ Smoke test completed successfully.")
+
+    if result.is_ok():
+        leaderboard = result.unwrap()
+        
+        # 💉 PERISAI 1: Pastikan leaderboard bukan None
+        if leaderboard is not None and not leaderboard.empty:
+            
+            # 2. AMBIL SANG JUARA (TOP 1)
+            top_candidate = leaderboard.iloc[0]
+            logger.info(f"🏆 Mengekstrak Juara 1: {top_candidate['label']} untuk Full Analytics...")
+            
+            # 3. PERSIAPKAN DATA 
+            combat_df = prepare_combat_data("DOGE", "BTC", "2025-09-01", "2025-09-30", 1.0).unwrap()
+            
+            # 💉 PERISAI 2: Pastikan data tidak None
+            if combat_df is not None:
+                winning_params = top_candidate['params']
+                exec_result = run_kalman_backtest(combat_df, winning_params).unwrap()
+                
+                # 💉 PERISAI 3: Pastikan hasil backtest tidak None
+                if exec_result is not None:
+                    
+                    # 4. MASUKKAN KE MESIN ANALISIS D3
+                    analytics = create_analytics()
+                    analytics.compute_metrics(exec_result)
+                    
+                    # 5. PANGGIL HAKIM BESI
+                    judge_criteria = get_criteria_by_name("default").unwrap()
+                    
+                    # 💉 PERISAI 4: Pastikan kriteria tidak None
+                    if judge_criteria is not None:
+                        judgment_res = analytics.judge(judge_criteria)
+                        
+                        # 6. CETAK LAPORAN FORENSIK (THE DoD)
+                        report_text = analytics.generate_report(format="text").unwrap()
+                        
+                        # 💉 PERISAI 5: Pastikan teks laporan tidak None
+                        if report_text is not None:
+                            print("\n" + report_text)
+                        
+                        if judgment_res.is_ok():
+                            judgment = judgment_res.unwrap()
+                            # 💉 PERISAI 6: Pastikan vonis tidak None
+                            if judgment is not None:
+                                print("=" * 60)
+                                print(f"⚖️ FINAL VERDICT : {judgment.verdict.value}")
+                                print(f"📝 SUMMARY       : {judgment.summary}")
+                                print("=" * 60)
+                        
+                        # 7. SIMPAN VISUALISASI GRAFIK (TANPA POP-UP)
+                        output_folder = Path("research/results/plots")
+                        output_folder.mkdir(parents=True, exist_ok=True)
+                        
+                        # Ubah save=True dan arahkan output directory-nya
+                        plots_res = analytics.generate_plots(save=True, output_dir=output_folder)
+                        
+                        if plots_res.is_ok():
+                            logger.info(f"📊 Dashboard Visual berhasil disembunyikan dan DISIMPAN di: {output_folder}")

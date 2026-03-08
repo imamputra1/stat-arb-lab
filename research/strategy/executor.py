@@ -61,6 +61,14 @@ def run_kalman_backtest(
     if historical_dataframe.empty:
         return Err("Historical dataframe is empty")
 
+    if "timestamp" not in historical_dataframe.columns:
+        return Err("Historical dataframe missing 'timestamp' column")
+    # Sample timestamp pertama untuk debugging
+    sample_ts = historical_dataframe["timestamp"].iloc[0] if len(historical_dataframe) > 0 else None
+    logger.info(f"Sample timestamp from input: {sample_ts} (type: {type(sample_ts)})")
+    if isinstance(sample_ts, (int, float)) and sample_ts < 1e10:
+        logger.warning(f"Timestamp tampak terlalu kecil ({sample_ts}), mungkin bukan milidetik?")
+
     # Rule 2: Build and validate SignalConfig
     # Ensure a 'name' field exists (SignalConfig requires it)
     parameters_with_name = candidate_parameters.copy()
@@ -168,6 +176,12 @@ def run_kalman_backtest(
     if "spread_val" not in enriched_dataframe.columns:
         return Err("Missing 'spread_val' column in strategy output")
     enriched_dataframe["price"] = enriched_dataframe["spread_val"]
+
+    if "timestamp" in historical_dataframe.columns:
+        # Gunakan .values agar tidak ada konflik index Pandas
+        enriched_dataframe["timestamp"] = historical_dataframe["timestamp"].values
+    else:
+        return Err("Fatal: original historical_dataframe lacks 'timestamp'")
 
     # Optional but recommended: drop any rows where price is NaN
     rows_before = len(enriched_dataframe)
