@@ -55,7 +55,7 @@ def prepare_combat_data(
         if pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
             # Asumsikan unit ms (dari log)
             df["timestamp"] = df["timestamp"].astype("int64")
-            print(f"🔍 DEBUG [pipeline] Converted datetime to int64: {df['timestamp'].iloc[0]}")
+             
         else:
             # Jika numerik, pastikan dalam milidetik
             df["timestamp"] = pd.to_numeric(df["timestamp"], errors='coerce')
@@ -64,14 +64,10 @@ def prepare_combat_data(
             # Cek apakah dalam detik (nilai < 1e10) atau milidetik (nilai > 1e12)
             if df["timestamp"].max() < 1e10:
                 df["timestamp"] = (df["timestamp"] * 1000).astype("int64")
-                print("🔍 DEBUG [pipeline] Konversi dari detik ke milidetik.")
+                
             else:
                 df["timestamp"] = df["timestamp"].astype("int64")
-                print("🔍 DEBUG [pipeline] Timestamp sudah dalam milidetik.")
-
-        print(f"🔍 DEBUG [pipeline] Final timestamp sample: {df['timestamp'].iloc[0]}")
-        print(f"🔍 DEBUG [pipeline] Final timestamp min: {df['timestamp'].min()}, max: {df['timestamp'].max()}")
-
+                
         # 4. Validasi kolom harga ada
         col_target = f"close_{target_coin}"
         col_anchor = f"close_{anchor_coin}"
@@ -83,21 +79,6 @@ def prepare_combat_data(
         if (df[col_target] <= 0).any() or (df[col_anchor] <= 0).any():
             return Err("Harga tidak positif, tidak bisa menghitung log spread.")
         df["spread_val"] = np.log(df[col_target]) - hedge_ratio * np.log(df[col_anchor])
-        # ---> 🕵️‍♂️ RECOGNIZE PROTOCOL 1: PINTU KELUAR PIPELINE <---
-        print("\n" + "="*50)
-        print("📍 [CCTV 1] EXIT PIPELINE (prepare_combat_data)")
-        print(f"Type Data : {type(df)}") # Polars atau Pandas?
-        print(f"Kolom     : {df.columns}")
-    
-        # Cek tipe khusus timestamp
-        if "timestamp" in df.columns:
-            if hasattr(df, "schema"): # Jika Polars
-                print(f"Tipe Kolom: {df.schema['timestamp']}")
-            else: # Jika Pandas
-                print(f"Tipe Kolom: {df['timestamp'].dtype}")
-            
-            print(f"Sample TS : {df['timestamp'][0]}")
-        print("="*50 + "\n")
     
         return Ok(df)
 
