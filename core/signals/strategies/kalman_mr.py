@@ -467,7 +467,6 @@ class KalmanMeanReversion(BaseStrategy):
             
             kalman_variance = float(state.P[0, 0]) + getattr(self.math_config, 'R', 0.001)
 
-            
             # 🧠 FIX MATEMATIKA: Volatilitas adalah Standar Deviasi (Akar Kuadrat dari Varians)
             volatility = float(np.sqrt(max(kalman_variance, 1e-18)))
             volatility = max(volatility, 1e-9) # Pengaman dari pembagian dengan nol

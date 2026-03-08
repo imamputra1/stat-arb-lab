@@ -4,6 +4,7 @@ Location: research/strategy/pipeline.py
 Focus: Load pre-merged silver data directly and compute spread_val.
 """
 
+import logging
 import polars as pl
 import pandas as pd
 import numpy as np
@@ -17,6 +18,10 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent.absolute()
 SILVER_DIR = PROJECT_ROOT / "data" / "silver"
 
 
+# research/strategy/pipeline.py (perbaikan akhir pada prepare_combat_data)
+logger = logging.getLogger(__name__)
+# research/strategy/pipeline.py (perbaikan konversi timestamp)
+
 def prepare_combat_data(
     target_coin: str,
     anchor_coin: str,
@@ -27,6 +32,7 @@ def prepare_combat_data(
     """
     Main orchestration: loads pre-merged silver data directly.
     Returns a clean pandas DataFrame ready for executor.
+    Timestamp dipastikan dalam format integer milidetik (Unix epoch).
     """
     try:
         # 1. Ekstrak Tahun dan Bulan
@@ -45,17 +51,26 @@ def prepare_combat_data(
         df = df.sort_values("timestamp").reset_index(drop=True)
         df = df.ffill().bfill()
 
-        # df["timestamp"] = pd.to_datetime(df["timestamp"]).astype("int64") // 10**6
-        # ---> 🔧 FIX: PASTIKAN TIMESTAMP INTEGER MILIDETIK <---
+        # ---> 🕒 KONVERSI TIMESTAMP KE INTEGER MILIDETIK <---
         if pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
-            # Konversi datetime ke integer milidetik (nanodetik // 1e6)
-            df["timestamp"] = df["timestamp"].astype("int64") // 10**6
+            # Asumsikan unit ms (dari log)
+            df["timestamp"] = df["timestamp"].astype("int64")
+            print(f"🔍 DEBUG [pipeline] Converted datetime to int64: {df['timestamp'].iloc[0]}")
         else:
-            # Jika sudah numerik, paksa ke int64
-            df["timestamp"] = pd.to_numeric(df["timestamp"], errors='coerce').astype("int64")
+            # Jika numerik, pastikan dalam milidetik
+            df["timestamp"] = pd.to_numeric(df["timestamp"], errors='coerce')
             if df["timestamp"].isna().any():
-                return Err("Timestamp mengandung nilai non-numerik setelah konversi.")
+                return Err("Timestamp mengandung nilai non-numerik.")
+            # Cek apakah dalam detik (nilai < 1e10) atau milidetik (nilai > 1e12)
+            if df["timestamp"].max() < 1e10:
+                df["timestamp"] = (df["timestamp"] * 1000).astype("int64")
+                print("🔍 DEBUG [pipeline] Konversi dari detik ke milidetik.")
+            else:
+                df["timestamp"] = df["timestamp"].astype("int64")
+                print("🔍 DEBUG [pipeline] Timestamp sudah dalam milidetik.")
 
+        print(f"🔍 DEBUG [pipeline] Final timestamp sample: {df['timestamp'].iloc[0]}")
+        print(f"🔍 DEBUG [pipeline] Final timestamp min: {df['timestamp'].min()}, max: {df['timestamp'].max()}")
 
         # 4. Validasi kolom harga ada
         col_target = f"close_{target_coin}"
@@ -64,10 +79,26 @@ def prepare_combat_data(
             return Err(f"Kolom harga tidak ditemukan: {col_target} atau {col_anchor}")
 
         # 5. Hitung spread_val wajib untuk Executor
+        # Pastikan harga positif sebelum log
         if (df[col_target] <= 0).any() or (df[col_anchor] <= 0).any():
             return Err("Harga tidak positif, tidak bisa menghitung log spread.")
         df["spread_val"] = np.log(df[col_target]) - hedge_ratio * np.log(df[col_anchor])
-
+        # ---> 🕵️‍♂️ RECOGNIZE PROTOCOL 1: PINTU KELUAR PIPELINE <---
+        print("\n" + "="*50)
+        print("📍 [CCTV 1] EXIT PIPELINE (prepare_combat_data)")
+        print(f"Type Data : {type(df)}") # Polars atau Pandas?
+        print(f"Kolom     : {df.columns}")
+    
+        # Cek tipe khusus timestamp
+        if "timestamp" in df.columns:
+            if hasattr(df, "schema"): # Jika Polars
+                print(f"Tipe Kolom: {df.schema['timestamp']}")
+            else: # Jika Pandas
+                print(f"Tipe Kolom: {df['timestamp'].dtype}")
+            
+            print(f"Sample TS : {df['timestamp'][0]}")
+        print("="*50 + "\n")
+    
         return Ok(df)
 
     except Exception as e:

@@ -127,6 +127,17 @@ def run_shotgun_test(
     if full_dataframe is None:
         return Err("Data preparation returned None")
     logger.info(f"✅ Full data loaded: {len(full_dataframe)} rows")
+    # ---> 🕵️‍♂️ RECOGNIZE PROTOCOL 2: RUANG TUNGGU SHOTGUN <---
+    print("\n" + "="*50)
+    print("📍 [CCTV 2] MASUK SHOTGUN (Sebelum masuk Executor)")
+    print(f"Type Data : {type(full_dataframe)}")
+    if "timestamp" in full_dataframe.columns:
+        if hasattr(full_dataframe, "schema"): # Polars
+            print(f"Tipe Kolom: {full_dataframe.schema['timestamp']}")
+        else: # Pandas
+            print(f"Tipe Kolom: {full_dataframe['timestamp'].dtype}")
+        print(f"Sample TS : {full_dataframe['timestamp'][0]}")
+    print("="*50 + "\n")
 
     # Apply the aero shield: take only first max_rows
     if len(full_dataframe) > max_rows:

@@ -178,8 +178,9 @@ def run_kalman_backtest(
     enriched_dataframe["price"] = enriched_dataframe["spread_val"]
 
     if "timestamp" in historical_dataframe.columns:
-        # Gunakan .values agar tidak ada konflik index Pandas
-        enriched_dataframe["timestamp"] = historical_dataframe["timestamp"].values
+        # ---> 💉 THE TRUE FIX: JANGAN GUNAKAN .values! <---
+        # Kita pertahankan Series aslinya agar metadata datetime64[ms] tidak hancur menjadi integer.
+        enriched_dataframe["timestamp"] = historical_dataframe["timestamp"].reset_index(drop=True)
     else:
         return Err("Fatal: original historical_dataframe lacks 'timestamp'")
 

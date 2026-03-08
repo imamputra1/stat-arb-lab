@@ -149,7 +149,8 @@ class QuantumParameterSpace:
 
             # Noise (discrete values, no longer continuous)
             ParameterDimension("Q", [1e-11, 1e-12, 1e-13], ParameterType.NOISE),
-            ParameterDimension("R", [5e-6, 1e-5], ParameterType.NOISE)
+            ParameterDimension("R", [5e-6, 1e-5], ParameterType.NOISE),
+            ParameterDimension("lambda_factor", [0.95, 0.99], ParameterType.THRESHOLD)
         ]
         return cls("shotgun", dimensions, SpaceStrategy.SHOTGUN)
     

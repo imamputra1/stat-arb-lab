@@ -28,6 +28,8 @@ from research.analysis.models import PerformanceMetrics
 # Asumsikan core.shared sudah ada dengan Result, Ok, Err
 from core.shared import Result, Ok, Err
 
+logger = logging.getLogger(__name__)
+
 # --- PATH BOOTSTRAP ---
 PROJECT_ROOT = Path(__file__).parent.parent.parent.absolute()
 if str(PROJECT_ROOT) not in sys.path:
@@ -171,14 +173,20 @@ def calculate_annualized_return(
     days: int,
     annualization_factor: int = 365
 ) -> float:
-    """Convert total return over days to annualized return."""
+    """Convert total return over days to annualized return.
+    Jika total_return <= -1 (loss >100%), anggap -100% karena tidak mungkin lebih."""
     if days <= 0:
         return 0.0
-    years = days / annualization_factor
+    # Prevent complex numbers from negative base with fractional exponent
+    if total_return <= 1.0:
+        return -1.0
+    years: float = days / annualization_factor
     if years <= 0:
         return 0.0
-    return (1 + total_return) ** (1 / years) - 1
-
+    try:
+        return (1.0 + total_return) ** (1.0 / years) - 1.0
+    except (ValueError, OverflowError):
+        return 0.0
 
 def calculate_volatility(
     returns: pd.Series,
@@ -240,19 +248,28 @@ def calculate_max_drawdown(returns: pd.Series) -> float:
 
 def calculate_max_drawdown_duration(returns: pd.Series) -> int:
     """
-    Calculate the longest drawdown duration in days.
-    Returns number of days.
+    Calculate the longest drawdown duration in minutes.
+    Uses ultra-fast NumPy vectorization instead of slow Pandas groupby.
     """
     if returns.empty:
         return 0
     drawdown = calculate_drawdown_series(returns)
-    in_drawdown = drawdown < 0
+    in_drawdown = (drawdown < 0).to_numpy()
+    
     if not in_drawdown.any():
         return 0
-    # Identify transitions
-    transitions = in_drawdown.ne(in_drawdown.shift())
-    groups = in_drawdown.groupby(transitions.cumsum())
-    durations = groups.apply(lambda x: len(x) if x.iloc[0] else 0)
+        
+    # Pad dengan False di kedua ujung untuk mendeteksi batas transisi dengan sempurna
+    padded = np.concatenate(([False], in_drawdown, [False]))
+    diffs = np.diff(padded.astype(np.int8))
+    
+    starts = np.where(diffs == 1)[0]
+    ends = np.where(diffs == -1)[0]
+    
+    durations = ends - starts
+    if len(durations) == 0:
+        return 0
+        
     return int(durations.max())
 
 
@@ -427,76 +444,83 @@ class PipelineAnalytics:
         else:
             df = results.copy()
 
-# --- Validate required columns ---
+        # --- Validate required columns ---
         required_cols = ["timestamp"]
         missing = [c for c in required_cols if c not in df.columns]
         if missing:
             return Err(f"Missing required columns: {missing}")
 
-        # ---> 🧹 KEMBALI KE STANDAR ELEGAN <---
+        # ---> 💉 THE DICTATOR FIX: NO MORE GUESSING <---
         if not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
             try:
-                # Coba konversi dengan asumsi integer milidetik
-                # Gunakan pd.to_numeric dulu untuk memastikan angka
-                timestamp_numeric = pd.to_numeric(df["timestamp"], errors='coerce')
-                if timestamp_numeric.isna().any():
-                    # Jika ada NaN, mungkin format string ISO
-                    df["timestamp"] = pd.to_datetime(df["timestamp"])
-                else:
-                    # Semua numerik, konversi dengan unit='ms'
-                    df["timestamp"] = pd.to_datetime(timestamp_numeric, unit='ms')
-            except Exception:
-                # Fallback terakhir
-                try:
-                    df["timestamp"] = pd.to_datetime(df["timestamp"])
-                except Exception as e2:
-                    return Err(f"Cannot convert timestamp to datetime: {e2}")
+                # Langsung paksa baca sebagai angka, dengan unit milidetik mutlak!
+                df["timestamp"] = pd.to_datetime(pd.to_numeric(df["timestamp"]), unit='ms')
+            except Exception as e:
+                return Err(f"Timestamp parsing failed: {e}")
 
         df = df.sort_values("timestamp").reset_index(drop=True)
+
+        # Guard: after sorting, timestamp must be monotonic increasing
+        if not df["timestamp"].is_monotonic_increasing:
+            return Err("Timestamp column is not monotonic increasing after sorting.")
 
         # --- Determine returns series ---
         returns: Optional[pd.Series] = None
 
         if "cumulative_returns" in df.columns:
-            returns_series = df["cumulative_returns"].diff().dropna()
+            returns_series: pd.Series = df["cumulative_returns"].diff().dropna()
             if returns_series.empty:
                 return Err("cumulative_returns column yields no returns after diff")
             returns = returns_series
+
         elif "price" in df.columns and "position" in df.columns:
-            price_series = df["price"]
-            position_series = df["position"]
-            # Safeguard: if selection returns DataFrame, take first column
-            if isinstance(price_series, pd.DataFrame):
-                price_series = price_series.iloc[:, 0]
-            if isinstance(position_series, pd.DataFrame):
-                position_series = position_series.iloc[:, 0]
-            # Ensure they are Series
+            price_series: pd.Series = df["price"]
+            position_series: pd.Series = df["position"]
+
+            # Guard: ensure they are series
             if not isinstance(price_series, pd.Series):
                 return Err("price column is not a Series after extraction")
             if not isinstance(position_series, pd.Series):
                 return Err("position column is not a Series after extraction")
 
-            # ---> 💉 SURGERY FIX: RUMUS RETURN UNTUK SPREAD (MENGHINDARI INF) <---
-            # Karena price kita adalah log-spread, return adalah SELISIH (.diff), bukan Persentase (.pct_change)
-            # Kita kalikan posisi KEMARIN (shift) dengan selisih harga HARI INI (diff)
+            # Guard: position must be -1 0 1 (or at least finite)
+            if not position_series.between(-1, 1).all():
+                return Err("position column contains values outside [-1, 1]")
+
+            # --- Calculate net returns with fee ---
+            # ---> 💉 STRICT TYPED PERCENTAGE RETURNS <---
+            price_series = df["price"].astype(float)
+            position_series = df["position"].astype(float)
+
+            raw_diff: pd.Series = price_series.diff().fillna(0.0)
+            shifted_pos: pd.Series = position_series.shift(1).fillna(0.0)
+
+            # Tentukan Modal Dasar (Notional Capital) dengan Type Guard
+            notional_capital: float = 1.0
+            valid_prices: pd.Series = price_series.loc[price_series != 0.0]
             
-            raw_diff = price_series.diff().fillna(0)
-            shifted_pos = position_series.shift(1).fillna(0)
+            if not valid_prices.empty:
+                first_valid_idx = valid_prices.first_valid_index()
+                if first_valid_idx is not None:
+                    notional_capital = abs(float(valid_prices.loc[first_valid_idx]))
 
-            # 1. Hitung Gross Profit (Murni selisih pergerakan harga)
-            gross_returns = shifted_pos * raw_diff
+            # Fallback jika spread terlalu kecil
+            if notional_capital < 1e-4:
+                notional_capital = 1.0
 
-            # 2. Hitung Fee (Biaya Transaksi) HANYA saat posisi berubah!
-            # Jika posisi berubah (0 ke 1, atau 1 ke 0), kita bayar fee 0.1% per leg (Total 0.2% per round trip)
-            pos_changes = position_series.diff().fillna(0).abs()
-            FEE_PER_LEG = 0.001
-            fee_series = pos_changes * price_series.abs() * FEE_PER_LEG
+            # Hitung Poin Profit dan Poin Fee
+            gross_points: pd.Series = shifted_pos * raw_diff
+            
+            pos_changes: pd.Series = position_series.diff().fillna(0.0).abs()
+            FEE_PER_LEG: float = 0.001
+            fee_points: pd.Series = pos_changes * price_series.abs() * FEE_PER_LEG
 
-            # 3. Hitung Net Profit (Gross dikurangi Fee)
-            returns = gross_returns - fee_series
+            # Normalisasi menjadi Persentase
+            returns_calculated: pd.Series = (gross_points - fee_points) / notional_capital
 
-            # 4. Bersihkan sisa-sisa angka anomali
-            returns = returns.replace([float('inf'), float('-inf')], 0.0).fillna(0.0)
+            # Sapu bersih anomali
+            returns_calculated = returns_calculated.replace([float('inf'), float('-inf')], 0.0).fillna(0.0)
+            returns = returns_calculated.astype(float)        
         else:
             return Err("DataFrame must contain either 'cumulative_returns' or both 'price' and 'position' columns.")
 
@@ -509,57 +533,77 @@ class PipelineAnalytics:
             return Err("Returns series is empty after derivation")
 
         # --- Compute basic time metrics ---
-        start_date = df["timestamp"].iloc[0].strftime("%Y-%m-%d")
-        end_date = df["timestamp"].iloc[-1].strftime("%Y-%m-%d")
-        total_days = (df["timestamp"].iloc[-1] - df["timestamp"].iloc[0]).days
+        if len(df) < 2:
+            return Err("DataFrame has fewer than 2 rows; cannot compute time metrics.")
+
+        start_date: str = df["timestamp"].iloc[0].strftime("%Y-%m-%d")
+        end_date: str = df["timestamp"].iloc[-1].strftime("%Y-%m-%d")
+        total_days: int = (df["timestamp"].iloc[-1] - df["timestamp"].iloc[0]).days
+        if total_days <= 0:
+            self.logger.warning(f"Total days = {total_days}, setting to 1 for annualization.")
+            total_days = 1
 
         self._phase = AnalyticsPhase.METRIC_CALCULATION
 
         # --- Core metrics ---
-        abs_profit = float(returns.sum())
-        # Cari harga awal untuk membagi profit agar menjadi persentase yang masuk akal
-        initial_price = 1.0
-        if "price" in df.columns:
-            first_valid = df["price"].loc[df["price"] != 0].first_valid_index()
-            if first_valid is not None:
-                initial_price = abs(float(df["price"].loc[first_valid]))
-        total_return = abs_profit / initial_price
-        annualized_return = calculate_annualized_return(total_return, total_days, self.config.annualization_factor)
-        volatility = calculate_volatility(returns, self.config.annualization_factor)
-        sharpe = calculate_sharpe_ratio(returns, self.config.risk_free_rate, self.config.annualization_factor)
-        sortino = calculate_sortino_ratio(returns, self.config.risk_free_rate, self.config.annualization_factor)
-        max_dd = calculate_max_drawdown(returns)
+        if (returns < -1.0).any():
+            return Err("Returns contain values less than -100% (impossible without leverage).")
 
-        max_dd_duration_minutes = calculate_max_drawdown_duration(returns)
-        max_dd_duration = int(max_dd_duration_minutes / 1440)
-        calmar = abs(annualized_return / max_dd) if max_dd != 0 else 0.0
+        equity: pd.Series = (1.0 + returns).cumprod()
+        total_return: float = float(equity.iloc[-1]) - 1.0
+
+        if not np.isfinite(total_return):
+            return Err(f"Total return is not finite: {total_return}")
+
+        # ---> 💉 SURGERY FIX: KEMBALIKAN KE INT ASLINYA <---
+        annualized_return: float = calculate_annualized_return(
+            total_return, total_days, self.config.annualization_factor
+        )
+        volatility: float = calculate_volatility(
+            returns, self.config.annualization_factor
+        )
+        sharpe: float = calculate_sharpe_ratio(
+            returns, float(self.config.risk_free_rate), self.config.annualization_factor
+        )
+        sortino: float = calculate_sortino_ratio(
+            returns, float(self.config.risk_free_rate), self.config.annualization_factor
+        )
+        max_dd: float = calculate_max_drawdown(returns)
+        # Drawdown can never be positive
+        if max_dd > 0.0:
+            max_dd = 0.0
+
+        max_dd_duration_minutes: int = calculate_max_drawdown_duration(returns)
+        max_dd_duration: int = int(max_dd_duration_minutes / 1440)
+        calmar: float = abs(annualized_return / max_dd) if max_dd < 0.0 else 0.0
 
         # --- Trade metrics (if trades provided) ---
         trade_stats: Dict[str, Any] = {}
         
         if (trades is None or trades.empty) and "price" in df.columns and "position" in df.columns:
             trades_list = []
-            entry_price = 0.0
-            current_pos = 0
+            entry_price: float = 0.0
+            current_pos: float = 0.0
 
             pos_arr = df["position"].values
             price_arr = df["price"].values
 
             for i in range(len(pos_arr)):
-                pos = pos_arr[i]
-                price = price_arr[i] # ---> 💉 SURGERY FIX: HARUS price_arr, bukan pos_arr! <---
+                pos = float(pos_arr[i])
+                price = float(price_arr[i])
 
                 if pos != current_pos:
-                    if current_pos != 0:
+                    if current_pos != 0.0:
                         trades_list.append({
                             "entry_price": entry_price,
                             "exit_price": price,
-                            "size": float(current_pos)
+                            "size": current_pos
                         })
-                    if pos != 0:
+                    if pos != 0.0:
                         entry_price = price
 
                 current_pos = pos
+            
             trades = pd.DataFrame(trades_list)
 
         if trades is not None and not trades.empty:
@@ -567,11 +611,10 @@ class PipelineAnalytics:
             if trade_res.is_ok():
                 trade_stats = trade_res.unwrap()
             else:
-                # Log warning but continue with empty stats
                 self.logger.warning(f"Trade statistics calculation failed: {trade_res.unwrap_err()}")
 
         # --- Risk metrics ---
-        var_95, cvar_95 = calculate_var_cvar(returns, self.config.value_at_risk_confidence)
+        var_95, cvar_95 = calculate_var_cvar(returns, float(self.config.value_at_risk_confidence))
         ulcer = calculate_ulcer_index(returns)
 
         # --- Assemble metrics object ---
@@ -584,20 +627,20 @@ class PipelineAnalytics:
             calmar_ratio=calmar,
             max_drawdown=max_dd,
             max_drawdown_duration=max_dd_duration,
-            total_trades=trade_stats.get("total_trades", 0),
-            winning_trades=trade_stats.get("winning_trades", 0),
-            losing_trades=trade_stats.get("losing_trades", 0),
-            win_rate=trade_stats.get("win_rate", 0.0) * 100,
-            avg_win=trade_stats.get("avg_win", 0.0),
-            avg_loss=trade_stats.get("avg_loss", 0.0),
-            profit_factor=trade_stats.get("profit_factor", 0.0),
-            expectancy=trade_stats.get("expectancy", 0.0),
-            value_at_risk_95=var_95,
-            conditional_var_95=cvar_95,
-            ulcer_index=ulcer,
-            start_date=start_date,
-            end_date=end_date,
-            total_days=total_days,
+            total_trades=int(trade_stats.get("total_trades", 0)),
+            winning_trades=int(trade_stats.get("winning_trades", 0)),
+            losing_trades=int(trade_stats.get("losing_trades", 0)),
+            win_rate=float(trade_stats.get("win_rate", 0.0)) * 100.0,
+            avg_win=float(trade_stats.get("avg_win", 0.0)),
+            avg_loss=float(trade_stats.get("avg_loss", 0.0)),
+            profit_factor=float(trade_stats.get("profit_factor", 0.0)),
+            expectancy=float(trade_stats.get("expectancy", 0.0)),
+            value_at_risk_95=float(var_95),
+            conditional_var_95=float(cvar_95),
+            ulcer_index=float(ulcer),
+            start_date=str(start_date),
+            end_date=str(end_date),
+            total_days=int(total_days),
             config_snapshot=self._get_config_snapshot()
         )
 
@@ -812,6 +855,8 @@ class PipelineAnalytics:
         self._phase = AnalyticsPhase.COMPLETED
         return Ok(figures)
 
+    # research/analysis/pipeline.py (perbaikan metode generate_report)
+
     def generate_report(self, format: str = "text") -> Result[str, str]:
         """
         Generate a human‑readable performance report.
@@ -835,7 +880,11 @@ class PipelineAnalytics:
         lines.append("")
         lines.append("RETURN METRICS:")
         lines.append(f"  Total Return:           {m.total_return:>10.2%}")
-        lines.append(f"  Annualized Return:      {m.annualized_return:>10.2%}")
+        # Handle kemungkinan annualized_return complex (akibat total_return < -1)
+        annualized = m.annualized_return
+        if isinstance(annualized, complex):
+            annualized = annualized.real
+        lines.append(f"  Annualized Return:      {annualized:>10.2%}")
         lines.append(f"  Volatility (ann.):      {m.volatility:>10.2%}")
         lines.append(f"  Sharpe Ratio:           {m.sharpe_ratio:>10.3f}")
         lines.append(f"  Sortino Ratio:          {m.sortino_ratio:>10.3f}")
