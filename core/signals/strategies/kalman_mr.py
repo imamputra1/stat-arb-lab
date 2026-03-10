@@ -464,11 +464,17 @@ class KalmanMeanReversion(BaseStrategy):
 
             # --- Z-SCORE CALCULATION ---
             # Inovasi Varians (S) = P + R
-            
             kalman_variance = float(state.P[0, 0]) + getattr(self.math_config, 'R', 0.001)
 
             # 🧠 FIX MATEMATIKA: Volatilitas adalah Standar Deviasi (Akar Kuadrat dari Varians)
             volatility = float(np.sqrt(max(kalman_variance, 1e-18)))
+            # Bandingkan volatilitas teoritis dengan Volatilitas Empiris (Realitas Pasar)
+            # yang sudah dihitung dari spread_history.
+            if hasattr(self._internal_state, 'volatility') and self._internal_state.volatility_history:
+
+                empirical_vol = float(self._internal_state.volatility_history[-1])
+                volatility = max(volatility, empirical_vol)
+
             volatility = max(volatility, 1e-9) # Pengaman dari pembagian dengan nol
             
             zscore = residual / volatility

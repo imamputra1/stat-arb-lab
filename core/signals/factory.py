@@ -35,12 +35,12 @@ from core.math.kalman import KalmanConfig, AdaptationMode
 print("\n[FACTORY] 1. Starting Import Sequence...")
 try:
     from core.signals.strategies.kalman_mr import KalmanMeanReversion
-    print(f"[FACTORY] ✅ Import SUCCESS: {KalmanMeanReversion}")
+    print(f"[FACTORY] [DONE] Import SUCCESS: {KalmanMeanReversion}")
 except ImportError as e:
-    print(f"[FACTORY] ❌ Import FAILED: {e}")
+    print(f"[FACTORY] [FAILED] Import FAILED: {e}")
     KalmanMeanReversion = None
 except Exception as e:
-    print(f"[FACTORY] ❌ Import CRASHED: {e}")
+    print(f"[FACTORY] [CRASHED] Import CRASHED: {e}")
     KalmanMeanReversion = None
 # ====================== TYPES & INTERFACES ======================
 
@@ -327,14 +327,14 @@ def build_kalman_mean_reversion(math_config: Optional[KalmanConfig], signal_conf
 # Tidak menunggu FactoryManager diinisialisasi.
 # Ini menjamin strategi terdaftar begitu file ini di-import.
 
-print("\n[SYSTEM] ⚡ Force-Registering Strategies...")
+print("\n[SYSTEM] [DONE] Force-Registering Strategies...")
 StrategyRegistry.register(
     strategy_type=StrategyType.KALMAN_MEAN_REVERSION,
     strategy_class=KalmanMeanReversion,
     math_config_type=KalmanConfig,
     builder=build_kalman_mean_reversion
 )
-print("[SYSTEM] ✅ Strategy Registration Complete.\n")
+print("[SYSTEM] [DONE] Strategy Registration Complete.\n")
 
 # ====================== ASSEMBLY FACTORY ======================
 

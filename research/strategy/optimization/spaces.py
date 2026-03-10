@@ -110,50 +110,54 @@ class QuantumParameterSpace:
     @classmethod
     def surgical_grid(cls) -> 'QuantumParameterSpace':
         """
-        Small grid around proven parameter.
-        Use for final tuning after shotgun phase.
+        THE TRUE PLATEAU RADAR (30 Kombinasi)
+        Mengunci parameter lain untuk melihat lanskap murni interaksi Q dan R.
         """
         dimensions = [
-            ParameterDimension("entry_z_score", [1.8, 2.0, 2.2], ParameterType.THRESHOLD),
-            ParameterDimension("exit_z_score", [0.5, 0.8], ParameterType.THRESHOLD),
-            ParameterDimension("stop_loss_z", [4.0, 5.0], ParameterType.THRESHOLD),
-            ParameterDimension("volatility_window", [4.0, 5.0], ParameterType.TEMPORAL),
-            ParameterDimension("warmup_days", [100], ParameterType.TEMPORAL),
-            ParameterDimension("Q", [1e-8, 1e-7, 1e-6], ParameterType.NOISE),
-            ParameterDimension("R", [1e-8, 1e-4, 1e-3], ParameterType.NOISE),
+            # 1. KUNCI SEMUA THRESHOLD (Fokus ke filter noise)
+            ParameterDimension("entry_z_score", [3.0], ParameterType.THRESHOLD),
+            ParameterDimension("exit_z_score", [0.0], ParameterType.THRESHOLD),
+            ParameterDimension("stop_loss_z", [5.0], ParameterType.THRESHOLD),
+            ParameterDimension("volatility_window", [120], ParameterType.TEMPORAL),
+            
+            # 2. RESOLUSI RADAR R (Dari data empiris P05 hingga ekstrem 1e-4)
+            ParameterDimension("R", [1e-6, 3e-6, 1e-5, 3e-5, 1e-4], ParameterType.NOISE),
+            
+            # 3. RESOLUSI RADAR Q (Dari ultra kaku hingga lumayan fleksibel)
+            ParameterDimension("Q", [1e-14, 1e-13, 1e-12, 1e-11, 1e-10, 1e-9], ParameterType.NOISE),
+
+            ParameterDimension("warmup_ticks", [100], ParameterType.TEMPORAL),
+            ParameterDimension("lambda_factor", [0.99], ParameterType.THRESHOLD)
         ]
         return cls("surgical", dimensions, SpaceStrategy.SURGICAL)
 
     @classmethod
     def dirty_shotgun(cls) -> 'QuantumParameterSpace':
         """
-        Wide random sampling to discover promising regions.
-        Updated with MFT-friendly parameter ranges:
-        - entry_z_score: discrete [2.0, 2.5, 3.0]
-        - exit_z_score: discrete [0.5, 1.0]
-        - stop_loss_z: discrete [4.0, 5.0]
-        - Q: discrete [1e-5, 1e-6, 1e-7]
-        - R: discrete [1e-2, 1e-3, 1e-4]
-        - volatility_window: discrete [60, 120, 240]
-        - warmup_ticks: unchanged [100, 200]
+        DEEP SNIPER CONFIGURATION (EMPIRICALLY CALIBRATED)
+        Fokus: Menggunakan data R empiris (1e-7 hingga 5e-6) dari Silver Data Lake.
         """
         dimensions = [
-            # Thresholds (now discrete to focus on proven values)
+            # 1. THRESHOLDS: Entry ekstrem untuk mengalahkan Fee 0.2%
             ParameterDimension("entry_z_score", [2.5, 3.0, 3.5], ParameterType.THRESHOLD),
             ParameterDimension("exit_z_score", [0.0, 0.5], ParameterType.THRESHOLD),
             ParameterDimension("stop_loss_z", [5.0, 6.0], ParameterType.THRESHOLD),
 
-            # Windows (discrete steps)
-            ParameterDimension("volatility_window", [240, 480], ParameterType.TEMPORAL),
+            # 2. TEMPORAL: Mengacu pada data roll_win Anda (30, 60, 120 menit)
+            ParameterDimension("volatility_window", [30, 60, 120], ParameterType.TEMPORAL),
             ParameterDimension("warmup_ticks", [100, 200], ParameterType.TEMPORAL),
 
-            # Noise (discrete values, no longer continuous)
-            ParameterDimension("Q", [1e-11, 1e-12, 1e-13], ParameterType.NOISE),
-            ParameterDimension("R", [5e-6, 1e-5], ParameterType.NOISE),
+            # 3. NOISE: Disetel murni berdasarkan P50 Data Lake Anda!
+            # R range: 5e-7 (Bawah P50 win 30) hingga 5e-6 (Atas P50 win 120)
+            ParameterDimension("R", [5e-7, 5e-6], ParameterType.NOISE),
+            
+            # Q harus sangat kecil agar bot sabar (10.000x lebih kecil dari R)
+            ParameterDimension("Q", [1e-12, 1e-10], ParameterType.NOISE),
+            
             ParameterDimension("lambda_factor", [0.95, 0.99], ParameterType.THRESHOLD)
         ]
-        return cls("shotgun", dimensions, SpaceStrategy.SHOTGUN)
-    
+        return cls("shotgun", dimensions, SpaceStrategy.SHOTGUN) 
+
     @classmethod
     def kamikaze_mode(cls) -> 'QuantumParameterSpace':
         """Extreme ranges – for stress testing and forcing pipeline to produce signals."""
