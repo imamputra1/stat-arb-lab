@@ -11,12 +11,12 @@ from research.ingestion import (
     ExchangeProvider,
 )
 
-# ====================== TIME CALIBRATION ======================
-START_DATE = datetime(2025, 12, 1)
-END_DATE = datetime.now()
-TIMEFRAME = "1m" 
+# ====================== KALIBRASI WAKTU ======================
+START_DATE = datetime(2025, 12, 1)      # 1 Desember 2025
+END_DATE   = datetime.now()             # hari ini (10 Maret 2026)
+TIMEFRAME  = "1m" 
 
-# ====================== TICKS 16 COIN ======================
+# ====================== 16 AMUNISI (TICKER) ======================
 TICKERS = [
     "BTC/USDT",
     "DOGE/USDT",
@@ -32,7 +32,7 @@ TICKERS = [
     "ARB/USDT",
     "OP/USDT",
     "FET/USDT",
-    "AGIX/USDT"
+    "AGIX/USDT",
 ]
 
 # Setup Logging
@@ -52,8 +52,8 @@ def get_adaptor_for_job(job: FetchJob) -> ExchangeProvider:
 
 # --- JOB EXECUTOR ---
 async def process_job(job: FetchJob, storage: ParquetStorageAdaptor) -> str:
-    logger.info(f"INGESTION START: {job.symbol} [{job.timeframe}]")
-    logger.info(f"RANGE: {job.start_date.date()} -> {job.end_date.date()}")
+    logger.info(f"MISSION START: {job.symbol} [{job.timeframe}]")
+    logger.info(f"Range: {job.start_date.date()} -> {job.end_date.date()}")
     
     adaptor = None
     try:
@@ -90,11 +90,11 @@ async def process_job(job: FetchJob, storage: ParquetStorageAdaptor) -> str:
 async def main():
     print("\n" + "="*50)
     print("      STAT-ARB DEEP DIVE: M1 HISTORY      ")
-    print("      Target: Des 2025 - Now (Hive Storage)  ")
+    print("      Target: Dec 2025 - Now (Hive Storage)  ")
     print("="*50 + "\n")
-
+    
     # Absolute path ke data lake (project root / data / raw)
-    base_data_path = Path(__file__).parent.parent / "data" / "raw"
+    base_data_path = Path(__file__).parent.parent.parent / "data" / "raw"
     storage = ParquetStorageAdaptor(base_path=str(base_data_path))
     
     jobs = [
@@ -114,7 +114,7 @@ async def main():
     results = await asyncio.gather(*tasks)
     
     print("\n" + "="*50)
-    print("           INGESTION REPORT           ")
+    print("           MISSION REPORT           ")
     print("="*50)
     for res in results:
         print(res)

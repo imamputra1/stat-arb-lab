@@ -1,0 +1,9 @@
+11:28:13 | INFO     | STARTING REFINERY | Target Years: [2025, 2026]
+11:28:13 | INFO     | District Processing: Year 2025
+11:28:13 | INFO     | Symbols found for 2025: ['SHIB-USDT', 'FET-USDT', 'ARB-USDT', 'WIF-USDT', 'PEPE-USDT', 'FLOKI-USDT', 'SOL-USDT', 'TAO-USDT', 'DOGE-USDT', 'LDO-USDT', 'RENDER-USDT', 'ETH-USDT', 'OP-USDT', 'BTC-USDT']
+11:28:14 | INFO     | Aligned Year 2025: 525600 rows, 74 columns
+11:28:14 | ERROR    | FAILURE | Year 2025: VALIDATION FAILED: Schema Mismatch: Missing required columns ['close']
+11:28:14 | INFO     | District Processing: Year 2026
+11:28:14 | INFO     | Symbols found for 2026: ['FET-USDT', 'SOL-USDT', 'OP-USDT', 'ARB-USDT', 'FLOKI-USDT', 'TAO-USDT', 'DOGE-USDT', 'PEPE-USDT', 'WIF-USDT', 'ETH-USDT', 'LDO-USDT', 'SHIB-USDT', 'BTC-USDT', 'RENDER-USDT']
+11:28:14 | INFO     | Aligned Year 2026: 99509 rows, 74 columns
+11:28:14 | ERROR    | FAILURE | Year 2026: VALIDATION FAILED: Schema Mismatch: Missing required columns ['close']

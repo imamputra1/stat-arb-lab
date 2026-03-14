@@ -79,7 +79,7 @@ class ExecutionSimulator:
         self._reject_prob_override: Optional[float] = None
         self._slippage_multiplier = 1.0
         
-        logger.info(f"😈 Evil Simulator Initialized | Mode: {self._current_regime.value}")
+        logger.info(f"[DONE] Evil Simulator Initialized | Mode: {self._current_regime.value}")
 
     # =========================================================
     # THE TORMENTOR INTERFACE (REGIME SWITCHING)
@@ -120,7 +120,7 @@ class ExecutionSimulator:
             self._reject_prob_override = 0.30 
             self._slippage_multiplier = 20.0  
             
-        logger.warning(f"⚠️ MARKET REGIME CHANGED TO: {regime.value}")
+        logger.warning(f"[WARNING] MARKET REGIME CHANGED TO: {regime.value}")
 
 
     # =========================================================

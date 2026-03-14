@@ -71,19 +71,19 @@ class LiveEngine:
 
     async def start(self):
         """Load data, initialize components, and run the main loop."""
-        logger.info("🚀 Starting Live Engine...")
+        logger.info("[Starting Live Engine...")
         self._running = True
 
         if not self._load_data():
-            logger.error("❌ Data loading failed. Aborting.")
+            logger.error("[FAILED] Data loading failed. Aborting.")
             return
 
         if not await self._init_execution():
-            logger.error("❌ Execution initialization failed. Aborting.")
+            logger.error("[FAILED] Execution initialization failed. Aborting.")
             return
 
         if not self._init_strategy():
-            logger.error("❌ Strategy initialization failed. Aborting.")
+            logger.error("[FAILED] Strategy initialization failed. Aborting.")
             return
 
         # =========================================================
@@ -91,7 +91,7 @@ class LiveEngine:
         # =========================================================
         assert self._data is not None, "Data is missing after load"
 
-        logger.info(f"🔥 Warmup for {self._warmup_ticks} ticks...")
+        logger.info(f"[PROCESSING] Warmup for {self._warmup_ticks} ticks...")
         limit = min(self._warmup_ticks, len(self._data)) 
         for i in range(limit):
             tick = self._data.iloc[i]
@@ -99,11 +99,11 @@ class LiveEngine:
             self._current_index = i + 1
 
         try:
-            logger.info("⚙️ Entering main trading loop...")
+            logger.info("[PROCESSING] Entering main trading loop...")
             await self._main_loop()
 
         except asyncio.CancelledError:
-            logger.warning("🛑 Dihentikan paksa oleh user (Ctrl+C)! Mempersiapkan laporan parsial...")
+            logger.warning("[FORCE] Dihentikan paksa oleh user (Ctrl+C)! Mempersiapkan laporan parsial...")
 
         finally:
             if hasattr(self, '_print_final_report'):
@@ -144,7 +144,7 @@ class LiveEngine:
             df.reset_index(drop=True, inplace=True)
 
             self._data = df
-            logger.info(f"✅ Data loaded: {len(df)} ticks")
+            logger.info(f"[DONE] Data loaded: {len(df)} ticks")
             return True
 
         except Exception as e:
@@ -163,7 +163,7 @@ class LiveEngine:
             )
             self._simulator = ExecutionSimulator(config=sim_config)
             self._market_data_adapter =SimulatorMarketData()
-            logger.info("✅ Simulator created")
+            logger.info("[DONE] Simulator created")
 
             allowed_oms_params = {
                 'max_open_orders',
@@ -196,7 +196,7 @@ class LiveEngine:
             assert self._oms is not None
             await self._oms.start()
             
-            logger.info("✅ Execution environment ready.")
+            logger.info("[DONE] Execution environment ready.")
             return True
 
         except Exception as e:
@@ -212,7 +212,7 @@ class LiveEngine:
                 return False
 
             self._strategy = strat_result.unwrap()
-            logger.info(f"✅ Strategy '{self.strategy_config.get('name')}' initialized.")
+            logger.info(f"[DONE] Strategy '{self.strategy_config.get('name')}' initialized.")
             return True
 
         except Exception as e:
@@ -234,7 +234,7 @@ class LiveEngine:
             tick_start = time.monotonic()
 
             if self._current_index % 100 == 0:
-                logger.info(f"⏳ Processing tick {self._current_index}/{len(self._data)}...")
+                logger.info(f"[PROCESSING] Processing tick {self._current_index}/{len(self._data)}...")
 
             row = self._data.iloc[self._current_index]
 
@@ -259,7 +259,7 @@ class LiveEngine:
                 self._market_data_adapter.update_price(symbol_traded, close_target)
 
             if not await self._check_risk():
-                logger.warning("⛔ Risk limit breached. Stopping trading.")
+                logger.warning("[STOP] Risk limit breached. Stopping trading.")
                 break
 
             if signal and signal.signal_type in (SignalType.BUY, SignalType.SELL):
@@ -277,7 +277,7 @@ class LiveEngine:
 
             self._current_index += 1
 
-        logger.info("🏁 Main loop finished.")
+        logger.info("[FINISH] Main loop finished.")
         await self._print_final_report()
 
     def _feed_tick(self, row: pd.Series):
@@ -340,32 +340,32 @@ class LiveEngine:
             if side == OrderSide.BUY:
                 if is_urgent:
                     limit_price = current_price * 1.001 
-                    logger.info(f"⚡ URGENT BUY (Z={zscore:.2f}) -> TAKER @ {limit_price:.4f}")
+                    logger.info(f"URGENT BUY (Z={zscore:.2f}) -> TAKER @ {limit_price:.4f}")
                 else:
                     limit_price = current_price * 1.0005 
-                    logger.info(f"🧘 PASSIVE BUY (Z={zscore:.2f}) -> MAKER(Simulated) @ {limit_price:.4f}")
+                    logger.info(f"PASSIVE BUY (Z={zscore:.2f}) -> MAKER(Simulated) @ {limit_price:.4f}")
                     
                 result = await self._oms.buy_limit(symbol, quantity, limit_price)
             else: 
                 if is_urgent:
                     limit_price = current_price * 0.999
-                    logger.info(f"⚡ URGENT SELL (Z={zscore:.2f}) -> TAKER @ {limit_price:.4f}")
+                    logger.info(f"URGENT SELL (Z={zscore:.2f}) -> TAKER @ {limit_price:.4f}")
                 else:
                     limit_price = current_price * 0.9995
-                    logger.info(f"🧘 PASSIVE SELL (Z={zscore:.2f}) -> MAKER(Simulated) @ {limit_price:.4f}")
+                    logger.info(f"PASSIVE SELL (Z={zscore:.2f}) -> MAKER(Simulated) @ {limit_price:.4f}")
                     
                 result = await self._oms.sell_limit(symbol, quantity, limit_price)
 
             match_result(
                 result,
                 on_ok=lambda report: logger.info(
-                    f"✅ Order {report.order.order_id} routed | Side: {side.name} | Qty: {quantity:,.2f} {symbol}"
+                    f"[DONE] Order {report.order.order_id} routed | Side: {side.name} | Qty: {quantity:,.2f} {symbol}"
                 ),
-                on_err=lambda err: logger.error(f"❌ Order failed: {err}"),
+                on_err=lambda err: logger.error(f"[FAILED] Order failed: {err}"),
             )
             
         except Exception as e:
-            logger.error(f"💥 _submit_order CRASHED: {e}", exc_info=True)
+            logger.error(f"[CRASHED] _submit_order CRASHED: {e}", exc_info=True)
 
     async def _check_risk(self) -> bool:
         """Check global risk limits (kill switch, drawdown)."""
@@ -400,16 +400,16 @@ class LiveEngine:
 
     async def _shutdown(self):
         """Graceful shutdown."""
-        logger.info("🛑 Shutting down engine...")
+        logger.info("[STOP] Shutting down engine...")
         if self._oms:
             await self._oms.stop()
-        logger.info("✅ Shutdown complete.")
+        logger.info("[DONE] Shutdown complete.")
 
 
     async def _print_final_report(self):
         """Cetak laporan performa setelah trading selesai."""
         if self._oms is None:
-            logger.warning("⚠️ OMS tidak tersedia, tidak bisa mencetak laporan.")
+            logger.warning("[WARNING] OMS tidak tersedia, tidak bisa mencetak laporan.")
             return
         initial_cash =self.execution_config.get("initial_cash", 500.0)
         reporter = MetricsReporter(self._oms, initial_cash)

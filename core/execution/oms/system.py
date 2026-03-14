@@ -138,7 +138,7 @@ class OrderManagementSystem:
                     balances = res_bal.unwrap()
                     for currency, amount in balances.items():
                         self.inventory._cash_balances[currency] = amount
-                        logger.info(f"💰 Saldo tersinkronisasi: {amount:,.2f}{currency}")
+                        logger.info(f"Saldo tersinkronisasi: {amount:,.2f}{currency}")
 
                 # 🔥 Validasi internal inventory
                 inv_state = self.inventory.validate_state()
