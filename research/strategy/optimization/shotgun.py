@@ -202,8 +202,8 @@ if __name__ == "__main__":
     result = run_shotgun_test(
         target_coin="DOGE", 
         anchor_coin="BTC",
-        start_date="2025-09-01", 
-        end_date="2025-09-30",
+        start_date="2025-12-01", 
+        end_date="2026-2-30",
         space_name="surgical",    # Menggunakan Surgical Grid
         max_rows=50000, 
         max_candidates=150, 
